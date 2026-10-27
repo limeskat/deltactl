@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "delta-plc-driver"
+name = "deltactl"
 version = "0.1.0"
 description = "Delta DVP PLC driver and CLI over Modbus TCP"
 requires-python = ">=3.10"
@@ -30,14 +30,14 @@ dev = [
 ]
 
 [project.scripts]
-plc = "delta_plc.cli:main"
+deltactl = "deltactl.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/delta_plc"]
+packages = ["src/deltactl"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "--cov=delta_plc --cov-branch --cov-report=term-missing"
+addopts = "--cov=deltactl --cov-branch --cov-report=term-missing"
 
 [tool.coverage.report]
 fail_under = 85
@@ -48,5 +48,5 @@ extend-exclude = ["docs"]
 
 [tool.mypy]
 python_version = "3.10"
-files = ["src/delta_plc"]
+files = ["src/deltactl"]
 disallow_untyped_defs = true

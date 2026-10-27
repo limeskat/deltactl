@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from delta_plc.transport import AsyncDeltaPLC
+from deltactl.transport import AsyncDeltaPLC
 
 
 @dataclass

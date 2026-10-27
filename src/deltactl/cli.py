@@ -1,6 +1,6 @@
 """Command-line interface for the Delta DVP PLC driver.
 
-Implements ``plc read``, ``plc write``, ``plc watch``, ``plc doctor``, and ``plc mock``.
+Implements ``deltactl read``, ``deltactl write``, ``deltactl watch``, ``deltactl doctor``, and ``deltactl mock``.
 The argument parser is assembled so every command extends through the same
 :func:`_add_common` helper without duplicating the global options.
 
@@ -268,9 +268,9 @@ def _add_mock_options(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the ``plc`` parser containing all commands."""
+    """Build the ``deltactl`` parser containing all commands."""
     parser = argparse.ArgumentParser(
-        prog="plc", description="Delta DVP PLC driver over Modbus TCP."
+        prog="deltactl", description="Delta DVP PLC driver over Modbus TCP."
     )
     parser.add_argument(
         "--version",
@@ -451,7 +451,7 @@ def _check_dtype_target(text: str, dtype: str | None, parser: argparse.ArgumentP
 
 
 def _cmd_read(args: argparse.Namespace) -> int:
-    """Implement ``plc read``."""
+    """Implement ``deltactl read``."""
     parser: argparse.ArgumentParser = args._parser
     raw = getattr(args, "raw", None)
     raw_type = getattr(args, "raw_type", None)
@@ -560,7 +560,7 @@ def _emit_read(
 
 
 def _cmd_write(args: argparse.Namespace) -> int:
-    """Implement ``plc write``."""
+    """Implement ``deltactl write``."""
     parser: argparse.ArgumentParser = args._parser
     raw = getattr(args, "raw", None)
     raw_type = getattr(args, "raw_type", None)
@@ -756,7 +756,7 @@ async def _run_watch(
 
 
 def _cmd_watch(args: argparse.Namespace) -> int:
-    """Implement ``plc watch``."""
+    """Implement ``deltactl watch``."""
     parser: argparse.ArgumentParser = args._parser
     use_json = bool(getattr(args, "json", False))
     fmt = getattr(args, "format", None)
@@ -823,7 +823,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
-    """Implement ``plc doctor``."""
+    """Implement ``deltactl doctor``."""
     parser: argparse.ArgumentParser = args._parser
     host, port, unit, timeout = _common_settings(args, parser, required=False)
     strict = bool(getattr(args, "strict", False))
@@ -863,7 +863,7 @@ def _emit_doctor(report: DoctorReport) -> None:
 
 
 def _cmd_mock(args: argparse.Namespace) -> int:
-    """Implement ``plc mock``."""
+    """Implement ``deltactl mock``."""
     host, port = args.listen if isinstance(args.listen, tuple) else _parse_listen(args.listen)
     seed = None
     if getattr(args, "seed", None) is not None:

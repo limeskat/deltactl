@@ -1,7 +1,7 @@
 """Synchronous facade over the async Delta DVP transport.
 
 :class:`DeltaPLC` owns one private event loop on one daemon thread. Every
-public method mirrors :class:`~delta_plc.transport.AsyncDeltaPLC`, submits the
+public method mirrors :class:`~deltactl.transport.AsyncDeltaPLC`, submits the
 matching coroutine with ``asyncio.run_coroutine_threadsafe`` and blocks for the
 result. Scripts and the CLI use this surface; asyncio programs should use
 :class:`AsyncDeltaPLC` directly.
