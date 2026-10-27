@@ -422,6 +422,8 @@ class AsyncDeltaPLC:
         The span check runs before the lock is taken, so every guard failure
         (range, boundary, read-only) happens without sending any PDU.
         """
+        if not values:
+            raise DeltaValueError("write requires at least one value")
         bit_like = tag.dtype is DType.BIT
         count = len(values) if bit_like else len(values) // tag.width
         total = count * tag.width if tag.address.device is Device.D else count
@@ -477,7 +479,13 @@ class AsyncDeltaPLC:
         bit = address.bit
         assert bit is not None
         group = ReadGroup(3, address.wire, 1, ())
-        registers, _, _ = await self._read_group_locked(group, self.read_retries)
+        try:
+            registers, _, _ = await self._read_group_locked(group, self.read_retries)
+        except DeltaTimeoutError:
+            # A write op owns the timeout rule: close so a late FC03 reply can
+            # never be matched to a later request. Other errors leave the socket.
+            self._client.close()
+            raise
         word = set_bit(registers[0], bit, value)
         await self._write_group_locked(6, address.wire, [word], self.write_retries)
 

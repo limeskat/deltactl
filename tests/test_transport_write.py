@@ -97,6 +97,36 @@ async def test_write_timeout_closes_socket():
     assert FakeClient.closes == 1
     assert not plc.is_connected
 
+async def test_rmw_read_timeout_closes_socket():
+    from pymodbus.exceptions import ModbusIOException
+    class FakeClient:
+        connected = True
+        reads = 0
+        writes = 0
+        closes = 0
+        async def connect(self): return True
+        def close(self): FakeClient.closes += 1; FakeClient.connected = False
+        async def read_holding_registers(self, *a, **k):
+            FakeClient.reads += 1
+            raise ModbusIOException("no response")
+        async def write_register(self, *a, **k):
+            FakeClient.writes += 1
+    plc = AsyncDeltaPLC("127.0.0.1")
+    plc._client = FakeClient()
+    with pytest.raises(DeltaTimeoutError):
+        await plc.write("D0.1", True)
+    assert FakeClient.writes == 0
+    assert FakeClient.closes == 1
+    assert not plc.is_connected
+
+async def test_empty_write_sequence_rejected(plc, mock):
+    before = mock.stats.requests
+    with pytest.raises(DeltaValueError):
+        await plc.write("D0", [])
+    with pytest.raises(DeltaValueError):
+        await plc.write_bits("M0", [])
+    assert mock.stats.requests == before
+
 async def test_write_retry_and_exception_not_retried():
     from pymodbus.pdu import ExceptionResponse
     class Ok:
