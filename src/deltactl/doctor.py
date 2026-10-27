@@ -648,7 +648,7 @@ async def _check_modbus_and_plc(
     except Exception as e:  # noqa: BLE001
         modbus_res = CheckResult("modbus", "FAIL", f"Modbus read error: {e}")
         plc_res = CheckResult("plc", "SKIP", "PLC check skipped due to Modbus failure")
-        model_res = CheckResult("model", "WARN", f"Model check failed due to Modbus failure: {e}")
+        model_res = CheckResult("model", "SKIP", f"Model check skipped due to Modbus failure: {e}")
         return modbus_res, plc_res, model_res, None
 
 
@@ -743,7 +743,7 @@ async def run_doctor(
             CheckResult(
                 "model",
                 "SKIP",
-                "model check skipped because TCP 502 connection failed",
+                "Model check skipped because TCP 502 connection failed",
             )
         )
         if icmp_res.status == "PASS":
