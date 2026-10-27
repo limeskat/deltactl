@@ -407,9 +407,10 @@ def _cmd_write(args: argparse.Namespace) -> int:
 
     values = [_parse_value(text, tag) for text in value_texts]
     encoded, display = _encode_write_values(tag, values, explicit)
+    frames = _plan_frames(tag, encoded, count)
 
     if dry_run:
-        _emit_dry_run(_plan_frames(tag, encoded, count), bool(getattr(args, "json", False)))
+        _emit_dry_run(frames, bool(getattr(args, "json", False)))
         return 0
 
     host, port, unit, timeout = _common_settings(args, parser)

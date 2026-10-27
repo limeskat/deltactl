@@ -68,3 +68,9 @@ def test_range_expansion(capsys, mock):
 def test_env_precedence(capsys, mock, monkeypatch):
     monkeypatch.setenv("DELTA_PLC_HOST", "203.0.113.1")
     assert run(capsys, mock, "read", "D100") == 0
+
+
+def test_multivalue_32bit_split_rejected_before_io(capsys):
+    assert main(["write", "--dtype", "f32", "D4093", "1.0", "2.0", "--host", "203.0.113.1", "--timeout", "0.01"]) == 2
+    assert "error:" in capsys.readouterr().err
+
