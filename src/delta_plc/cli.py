@@ -1,7 +1,7 @@
 """Command-line interface for the Delta DVP PLC driver.
 
-Implements ``plc read``, ``plc write``, and ``plc watch``. The argument parser is assembled so
-later commands (``doctor``, ``mock``) can extend it through the same
+Implements ``plc read``, ``plc write``, ``plc watch``, ``plc doctor``, and ``plc mock``.
+The argument parser is assembled so every command extends through the same
 :func:`_add_common` helper without duplicating the global options.
 
 Exit codes follow the CLI contract: ``0`` success, ``1`` operational failure,
@@ -22,10 +22,12 @@ import os
 import re
 import sys
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal, overload
 
+from . import __version__
 from .addressing import Device, expand_tags, parse_raw, parse_tag, validate_span
 from .client import DeltaPLC
+from .doctor import DoctorReport, run_doctor
 from .errors import (
     AddressRangeError,
     AddressSyntaxError,
@@ -35,6 +37,7 @@ from .errors import (
     PollerError,
     ReadOnlyAddressError,
 )
+from .mock import MockServer
 from .packing import DType, encode_values, mask_u16
 from .planning import Tag, make_tag, plan_chunks
 from .poller import CsvWriter, FrameWriter, NdjsonWriter, TableWriter, TagPoller
@@ -176,10 +179,108 @@ def _add_watch_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_doctor_options(parser: argparse.ArgumentParser) -> None:
+    """Add the ``doctor``-specific options."""
+    parser.add_argument(
+        "--scan",
+        metavar="CIDR",
+        default=None,
+        help="scan CIDR subnet on Modbus port",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        default=False,
+        help="exit 1 on WARN verdict",
+    )
+
+
+def _parse_listen(text: str) -> tuple[str, int]:
+    """Parse a listen address formatted as ``HOST:PORT`` or ``[IPV6]:PORT``."""
+    text = text.strip()
+    if text.startswith("["):
+        closing = text.find("]")
+        if closing == -1 or len(text) <= closing + 1 or text[closing + 1] != ":":
+            raise ValueError(f"invalid listen address: {text!r}")
+        host = text[1:closing]
+        port_str = text[closing + 2 :]
+    else:
+        parts = text.rsplit(":", 1)
+        if len(parts) != 2:
+            raise ValueError(f"invalid listen address: {text!r}")
+        host, port_str = parts[0], parts[1]
+
+    if not host:
+        raise ValueError(f"invalid listen address (missing host): {text!r}")
+    try:
+        port = int(port_str)
+    except ValueError:
+        raise ValueError(f"invalid listen port in {text!r}: expected integer") from None
+    if not (0 <= port <= 65535):
+        raise ValueError(f"listen port {port} out of range (0-65535)")
+    return host, port
+
+
+def _add_mock_options(parser: argparse.ArgumentParser) -> None:
+    """Add the ``mock``-specific options."""
+    parser.add_argument(
+        "--listen",
+        type=_parse_listen,
+        default=("127.0.0.1", 5020),
+        metavar="HOST:PORT",
+        help="bind address (default 127.0.0.1:5020)",
+    )
+    parser.add_argument(
+        "--seed",
+        metavar="FILE",
+        default=None,
+        help="JSON file to seed registers/coils",
+    )
+    parser.add_argument(
+        "--fault-code",
+        type=int,
+        default=None,
+        metavar="N",
+        help="simulate fault code in D1067 and set M1067",
+    )
+    parser.add_argument(
+        "--plc-stop",
+        action="store_true",
+        default=False,
+        help="simulate PLC in STOP mode (M1000=False)",
+    )
+    scan_group = parser.add_mutually_exclusive_group()
+    scan_group.add_argument(
+        "--fixed-scan-ms",
+        type=float,
+        default=None,
+        metavar="F",
+        help="fixed scan time in milliseconds",
+    )
+    scan_group.add_argument(
+        "--live-scan",
+        action="store_true",
+        default=False,
+        help="simulate live scan times",
+    )
+    parser.add_argument(
+        "--max-clients",
+        type=int,
+        default=4,
+        metavar="N",
+        help="maximum concurrent clients (default 4)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Build the ``plc`` parser containing the ``read``, ``write``, and ``watch`` commands."""
+    """Build the ``plc`` parser containing all commands."""
     parser = argparse.ArgumentParser(
         prog="plc", description="Delta DVP PLC driver over Modbus TCP."
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     _add_common(parser)
     parser.set_defaults(_parser=parser)
@@ -204,6 +305,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_watch_options(watch)
     watch.set_defaults(_parser=watch)
 
+    doctor = subparsers.add_parser(
+        "doctor", help="diagnose network and PLC health"
+    )
+    _add_common(doctor)
+    _add_doctor_options(doctor)
+    doctor.set_defaults(_parser=doctor)
+
+    mock = subparsers.add_parser(
+        "mock", help="run a hardware-faithful mock PLC server"
+    )
+    _add_common(mock)
+    _add_mock_options(mock)
+    mock.set_defaults(_parser=mock)
+
     return parser
 
 
@@ -220,9 +335,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "read":
             return _cmd_read(args)
+        if args.command == "write":
+            return _cmd_write(args)
         if args.command == "watch":
             return _cmd_watch(args)
-        return _cmd_write(args)
+        if args.command == "doctor":
+            return _cmd_doctor(args)
+        if args.command == "mock":
+            return _cmd_mock(args)
+        return 2
     except _USAGE_ERRORS as exc:
         return _fail(exc, 2)
     except ReadOnlyAddressError as exc:
@@ -264,15 +385,38 @@ def _configure_logging(args: argparse.Namespace) -> None:
 # -- global option resolution ---------------------------------------------
 
 
+@overload
 def _common_settings(
-    args: argparse.Namespace, parser: argparse.ArgumentParser
-) -> tuple[str, int, int, float]:
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    *,
+    required: Literal[True] = True,
+) -> tuple[str, int, int, float]: ...
+
+
+@overload
+def _common_settings(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    *,
+    required: Literal[False],
+) -> tuple[str | None, int, int, float]: ...
+
+
+def _common_settings(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    *,
+    required: bool = True,
+) -> tuple[str | None, int, int, float]:
     """Resolve host/port/unit/timeout with flag > environment > default."""
     host = getattr(args, "host", None)
     if host is None:
         host = os.environ.get("DELTA_PLC_HOST")
     if not host:
-        parser.error("--host is required (or set DELTA_PLC_HOST)")
+        if required:
+            parser.error("--host is required (or set DELTA_PLC_HOST)")
+        host = None
     port = _resolve_int(args, "port", "DELTA_PLC_PORT", 502)
     unit = _resolve_int(args, "unit", "DELTA_PLC_UNIT", 1)
     timeout = _resolve_float(args, "timeout", "DELTA_PLC_TIMEOUT", 2.0)
@@ -702,6 +846,87 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         if hasattr(sys.stdout, "reconfigure"):
             with contextlib.suppress(AttributeError, io.UnsupportedOperation):
                 sys.stdout.reconfigure(newline=None)
+
+
+# -- doctor ----------------------------------------------------------------
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Implement ``plc doctor``."""
+    parser: argparse.ArgumentParser = args._parser
+    host, port, unit, timeout = _common_settings(args, parser, required=False)
+    strict = bool(getattr(args, "strict", False))
+    scan = getattr(args, "scan", None)
+    use_json = bool(getattr(args, "json", False))
+
+    report = asyncio.run(
+        run_doctor(
+            host,
+            port=port,
+            unit=unit,
+            scan=scan,
+            strict=strict,
+            timeout=timeout,
+        )
+    )
+    if use_json:
+        print(json.dumps(report.to_dict()))
+    else:
+        _emit_doctor(report)
+    return report.exit_code(strict=strict)
+
+
+def _emit_doctor(report: DoctorReport) -> None:
+    """Print doctor diagnostic report as a fixed-width ASCII table."""
+    print(f"{'STATUS':<8}{'CHECK':<12}{'DETAIL'}")
+    for check in report.checks:
+        print(f"{check.status:<8}{check.name:<12}{check.detail}")
+    print(f"verdict: {report.verdict}")
+    if report.hints:
+        print("hints:")
+        for hint in report.hints:
+            print(f"  {hint}")
+
+
+# -- mock ------------------------------------------------------------------
+
+
+def _cmd_mock(args: argparse.Namespace) -> int:
+    """Implement ``plc mock``."""
+    host, port = (
+        args.listen
+        if isinstance(args.listen, tuple)
+        else _parse_listen(args.listen)
+    )
+    seed = None
+    if getattr(args, "seed", None) is not None:
+        with open(args.seed, "r", encoding="utf-8") as f:
+            seed = json.load(f)
+        if not isinstance(seed, dict):
+            raise DeltaValueError("--seed file must contain a JSON object")
+
+    logging.getLogger("pymodbus").setLevel(logging.WARNING)
+
+    server = MockServer(
+        host=host,
+        port=port,
+        max_clients=args.max_clients,
+        seed=seed,
+        fault_code=args.fault_code,
+        plc_stop=args.plc_stop,
+        fixed_scan_ms=args.fixed_scan_ms,
+        live_scan=args.live_scan,
+    )
+    try:
+        server.start()
+        real_host, real_port = server.address
+        print(f"listening on {real_host}:{real_port}", file=sys.stderr, flush=True)
+        server.serve()
+        return 0
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        server.stop()
 
 
 # -- shared output helpers -------------------------------------------------
