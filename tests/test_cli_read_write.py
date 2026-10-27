@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from delta_plc.cli import main
-from delta_plc.mock import MockServer
+from deltactl.cli import main
+from deltactl.mock import MockServer
 
 
 @pytest.fixture(scope="module")

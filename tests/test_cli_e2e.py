@@ -4,7 +4,7 @@ import subprocess
 import sys
 import threading
 
-from delta_plc.cli import main
+from deltactl.cli import main
 
 
 def _readline(stream, timeout=5.0):
@@ -18,7 +18,7 @@ def _readline(stream, timeout=5.0):
 
 def test_mock_subprocess_and_all_commands():
     proc = subprocess.Popen(
-        [sys.executable, "-m", "delta_plc.cli", "mock", "--listen", "127.0.0.1:0"],
+        [sys.executable, "-m", "deltactl.cli", "mock", "--listen", "127.0.0.1:0"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

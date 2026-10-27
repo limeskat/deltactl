@@ -4,8 +4,8 @@ import asyncio
 import os
 import sys
 
-from delta_plc import AsyncDeltaPLC, TagPoller
-from delta_plc.poller import NdjsonWriter
+from deltactl import AsyncDeltaPLC, TagPoller
+from deltactl.poller import NdjsonWriter
 
 
 async def main() -> None:

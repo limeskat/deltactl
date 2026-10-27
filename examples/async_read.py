@@ -3,7 +3,7 @@
 import asyncio
 import os
 
-from delta_plc import AsyncDeltaPLC
+from deltactl import AsyncDeltaPLC
 
 
 async def main() -> None:

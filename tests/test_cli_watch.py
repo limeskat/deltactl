@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from delta_plc.cli import main
-from delta_plc.mock import MockServer
+from deltactl.cli import main
+from deltactl.mock import MockServer
 
 
 @pytest.fixture(scope="module")
@@ -60,5 +60,5 @@ def test_sigint_returns_130(monkeypatch, mock):
     async def boom(self, **kwargs):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("delta_plc.poller.TagPoller.run", boom)
+    monkeypatch.setattr("deltactl.poller.TagPoller.run", boom)
     assert run(mock, "watch", "D100") == 130

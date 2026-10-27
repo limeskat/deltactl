@@ -7,9 +7,9 @@ import time
 
 import pytest
 
-from delta_plc import AsyncDeltaPLC, DeltaPLC
-from delta_plc.errors import DeltaTimeoutError
-from delta_plc.mock import MockServer
+from deltactl import AsyncDeltaPLC, DeltaPLC
+from deltactl.errors import DeltaTimeoutError
+from deltactl.mock import MockServer
 
 
 @pytest.fixture(scope="module")
@@ -54,8 +54,8 @@ def test_close_idempotent(mock):
 
 def test_atexit_registered_and_unregistered(monkeypatch):
     callbacks = []
-    monkeypatch.setattr("delta_plc.client.atexit.register", callbacks.append)
-    monkeypatch.setattr("delta_plc.client.atexit.unregister", callbacks.remove)
+    monkeypatch.setattr("deltactl.client.atexit.register", callbacks.append)
+    monkeypatch.setattr("deltactl.client.atexit.unregister", callbacks.remove)
     plc = DeltaPLC("127.0.0.1")
     assert plc.close in callbacks
     plc.close()
@@ -142,7 +142,7 @@ def test_self_call_from_loop_thread_raises(mock):
 
 
 def test_all_sync_read_write_variants(mock):
-    from delta_plc.planning import make_tags, plan_reads
+    from deltactl.planning import make_tags, plan_reads
 
     with DeltaPLC("127.0.0.1", port=mock.address[1]) as plc:
         plc.write_u16("D9001", 1234)

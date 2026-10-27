@@ -1,9 +1,9 @@
 # tests/test_planning.py
 import pytest
 
-from delta_plc.errors import AddressRangeError, BlockBoundaryError, DeltaValueError
-from delta_plc.packing import DType
-from delta_plc.planning import make_tag, make_tags, plan_chunks, plan_reads
+from deltactl.errors import AddressRangeError, BlockBoundaryError, DeltaValueError
+from deltactl.packing import DType
+from deltactl.planning import make_tag, make_tags, plan_chunks, plan_reads
 
 
 def test_gap_merging_boundary():

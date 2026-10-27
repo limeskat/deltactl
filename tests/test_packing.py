@@ -3,8 +3,8 @@ import math
 
 import pytest
 
-from delta_plc.errors import DeltaValueError
-from delta_plc.packing import (
+from deltactl.errors import DeltaValueError
+from deltactl.packing import (
     DType,
     decode_value,
     decode_values,

@@ -1,14 +1,14 @@
 import pytest
 
-from delta_plc.errors import (
+from deltactl.errors import (
     BlockBoundaryError,
     DeltaModbusException,
     DeltaProtocolError,
     DeltaValueError,
     NotConnectedError,
 )
-from delta_plc.mock import MockServer
-from delta_plc.transport import AsyncDeltaPLC
+from deltactl.mock import MockServer
+from deltactl.transport import AsyncDeltaPLC
 
 
 @pytest.fixture(scope="module")
@@ -188,7 +188,7 @@ async def test_read_retries_then_succeeds(monkeypatch):
 async def test_read_planned_short_circuits_on_connection_error():
     from pymodbus.exceptions import ConnectionException
 
-    from delta_plc.planning import make_tags, plan_reads
+    from deltactl.planning import make_tags, plan_reads
 
     class Down:
         connected = True

@@ -1,7 +1,7 @@
 # tests/test_doctor.py
 import pytest
 
-from delta_plc.doctor import (
+from deltactl.doctor import (
     CheckResult,
     _check_icmp_sync,
     _check_interface_sync,
@@ -11,7 +11,7 @@ from delta_plc.doctor import (
     subnet_hints,
     verdict,
 )
-from delta_plc.mock import MockServer
+from deltactl.mock import MockServer
 
 
 def test_verdict_priority():
@@ -96,7 +96,7 @@ async def test_scan_opt_in(monkeypatch):
         calls.append(host)
         return host.endswith(".5")
 
-    monkeypatch.setattr("delta_plc.doctor._probe_tcp", fake_probe)
+    monkeypatch.setattr("deltactl.doctor._probe_tcp", fake_probe)
     hosts = await scan_subnet("192.168.1.0/29")
     assert "192.168.1.5" in hosts and calls
 
@@ -118,8 +118,8 @@ def test_powershell_parameter_binding(monkeypatch):
         recorded_cmds.append(list(cmd))
         return FakeResult()
 
-    monkeypatch.setattr("delta_plc.doctor.platform.system", lambda: "Windows")
-    monkeypatch.setattr("delta_plc.doctor.subprocess.run", fake_run)
+    monkeypatch.setattr("deltactl.doctor.platform.system", lambda: "Windows")
+    monkeypatch.setattr("deltactl.doctor.subprocess.run", fake_run)
 
     _res, dev = _check_interface_sync("192.168.1.50; injection")
     assert dev == "Ethernet0"
@@ -137,13 +137,13 @@ def test_powershell_parameter_binding(monkeypatch):
 
 
 def test_interface_undeterminable_returns_skip(monkeypatch):
-    monkeypatch.setattr("delta_plc.doctor.platform.system", lambda: "Linux")
+    monkeypatch.setattr("deltactl.doctor.platform.system", lambda: "Linux")
 
     class RouteResult:
         returncode = 0
         stdout = "192.168.1.50 dev eth0 src 192.168.1.1\n"
 
-    monkeypatch.setattr("delta_plc.doctor.subprocess.run", lambda *a, **kw: RouteResult())
+    monkeypatch.setattr("deltactl.doctor.subprocess.run", lambda *a, **kw: RouteResult())
     res, dev = _check_interface_sync("192.168.1.50")
     assert dev == "eth0"
     assert res.status == "SKIP"
@@ -153,7 +153,7 @@ def test_interface_undeterminable_returns_skip(monkeypatch):
 def test_icmp_fallback_timeout_returns_warn(monkeypatch):
     import subprocess
 
-    monkeypatch.setattr("delta_plc.doctor.platform.system", lambda: "Linux")
+    monkeypatch.setattr("deltactl.doctor.platform.system", lambda: "Linux")
 
     first_call = True
 
@@ -169,7 +169,7 @@ def test_icmp_fallback_timeout_returns_warn(monkeypatch):
             return InitialResult()
         raise subprocess.TimeoutExpired(cmd, 5)
 
-    monkeypatch.setattr("delta_plc.doctor.subprocess.run", fake_run)
+    monkeypatch.setattr("deltactl.doctor.subprocess.run", fake_run)
     res = _check_icmp_sync("192.168.1.50")
     assert res.status == "WARN"
     assert "ping timed out" in res.detail or "0/3 replies" in res.detail
@@ -191,7 +191,7 @@ def test_subnet_hints_matrix():
 
 
 async def test_probe_tcp_and_invalid_scan(mock):
-    from delta_plc.doctor import _probe_tcp
+    from deltactl.doctor import _probe_tcp
 
     assert await _probe_tcp("127.0.0.1", mock.address[1], timeout=1.0) is True
     assert await _probe_tcp("127.0.0.1", 1, timeout=0.1) is False

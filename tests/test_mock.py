@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from pymodbus.client import AsyncModbusTcpClient
 
-from delta_plc.mock import MockServer
+from deltactl.mock import MockServer
 
 
 @pytest.fixture

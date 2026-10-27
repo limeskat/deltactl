@@ -1,14 +1,14 @@
 # tests/test_addressing.py
 import pytest
 
-from delta_plc.addressing import (
+from deltactl.addressing import (
     expand_tags,
     normalize_tag,
     parse_raw,
     parse_tag,
     validate_span,
 )
-from delta_plc.errors import (
+from deltactl.errors import (
     AddressRangeError,
     AddressSyntaxError,
     BlockBoundaryError,

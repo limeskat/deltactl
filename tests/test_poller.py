@@ -3,9 +3,9 @@ from datetime import datetime
 
 import pytest
 
-from delta_plc.errors import DeltaConnectionError, PollerError
-from delta_plc.poller import TagPoller
-from delta_plc.transport import GroupResult
+from deltactl.errors import DeltaConnectionError, PollerError
+from deltactl.poller import TagPoller
+from deltactl.transport import GroupResult
 
 
 def result(group, value, error=None):

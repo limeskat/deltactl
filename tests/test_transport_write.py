@@ -1,12 +1,12 @@
 import pytest
 
-from delta_plc.errors import (
+from deltactl.errors import (
     DeltaTimeoutError,
     DeltaValueError,
     ReadOnlyAddressError,
 )
-from delta_plc.mock import MockServer
-from delta_plc.transport import AsyncDeltaPLC
+from deltactl.mock import MockServer
+from deltactl.transport import AsyncDeltaPLC
 
 
 @pytest.fixture(scope="module")
@@ -68,7 +68,7 @@ async def test_guards_send_no_frame(plc, mock, call):
 
 
 async def test_32bit_write_cannot_cross_split(plc, mock):
-    from delta_plc.errors import BlockBoundaryError
+    from deltactl.errors import BlockBoundaryError
 
     before = mock.stats.requests
     with pytest.raises(BlockBoundaryError):
@@ -209,7 +209,7 @@ async def test_write_retry_and_exception_not_retried():
 
     plc = AsyncDeltaPLC("127.0.0.1", write_retries=3)
     plc._client = Rejected()
-    from delta_plc.errors import DeltaModbusException
+    from deltactl.errors import DeltaModbusException
 
     with pytest.raises(DeltaModbusException):
         await plc.write("D0", 1)

@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from delta_plc import AsyncDeltaPLC
+from deltactl import AsyncDeltaPLC
 
 HOST = os.environ.get("DELTA_PLC_HIL_HOST")
 pytestmark = pytest.mark.skipif(not HOST, reason="set DELTA_PLC_HIL_HOST to run HIL tests")

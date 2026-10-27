@@ -1,4 +1,4 @@
-from delta_plc.errors import (
+from deltactl.errors import (
     AddressRangeError,
     DeltaAddressError,
     DeltaModbusException,

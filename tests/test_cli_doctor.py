@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from delta_plc.cli import _parse_listen, main
-from delta_plc.mock import MockServer
+from deltactl.cli import _parse_listen, main
+from deltactl.mock import MockServer
 
 
 @pytest.fixture(scope="module")
@@ -39,7 +39,7 @@ def test_version(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert "0.1.0" in capsys.readouterr().out
+    assert "deltactl 0.1.0" in capsys.readouterr().out
 
 
 def test_doctor_table_format(capsys, mock):
@@ -61,7 +61,7 @@ def test_cli_mock_command(monkeypatch, tmp_path):
     def fake_serve(self):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("delta_plc.mock.MockServer.serve", fake_serve)
+    monkeypatch.setattr("deltactl.mock.MockServer.serve", fake_serve)
     assert main(["mock", "--listen", "127.0.0.1:0", "--seed", str(seed_file)]) == 0
 
     bad_seed = tmp_path / "bad.json"

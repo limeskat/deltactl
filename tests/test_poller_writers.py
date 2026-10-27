@@ -5,7 +5,7 @@ import io
 import json
 import math
 
-from delta_plc.poller import CsvWriter, Frame, NdjsonWriter, TableWriter, TagPoller
+from deltactl.poller import CsvWriter, Frame, NdjsonWriter, TableWriter, TagPoller
 from tests.test_poller import FakeClient, FakeClock, result
 
 
@@ -104,7 +104,7 @@ def test_heartbeat_full_snapshot():
 
 
 def test_quality_change_emits_even_when_values_match():
-    from delta_plc.errors import DeltaProtocolError
+    from deltactl.errors import DeltaProtocolError
 
     class Q:
         connected = True
@@ -133,7 +133,7 @@ def test_quality_change_emits_even_when_values_match():
 def test_per_tag_deadband_overrides_global():
     from dataclasses import replace
 
-    from delta_plc.planning import make_tag
+    from deltactl.planning import make_tag
 
     client, clock = FakeClient(values=(1, 3, 5)), FakeClock()
     tag = replace(make_tag("D100"), deadband=3.0)
