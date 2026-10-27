@@ -11,9 +11,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .addressing import Address, Device, block_for, parse_tag, validate_span, wire_for
+from .addressing import Address, Device, TagAddress, block_for, parse_tag, validate_span, wire_for
 from .errors import BlockBoundaryError, DeltaValueError
 from .packing import DType
+from .profiles import DEFAULT_PROFILE, SeriesProfile
 
 __all__ = [
     "Chunk",
@@ -73,7 +74,13 @@ class Chunk:
     values: int
 
 
-def make_tag(text: str, default_dtype: DType | None = None) -> Tag:
+def make_tag(
+    text: str,
+    default_dtype: DType | None = None,
+    *,
+    dtype: DType | None = None,
+    profile: SeriesProfile | None = None,
+) -> Tag:
     """Parse *text* into a validated :class:`Tag`.
 
     Bit tags (``D100.3``) and the M/X/Y devices are always ``DType.BIT``; an
@@ -82,31 +89,39 @@ def make_tag(text: str, default_dtype: DType | None = None) -> Tag:
     inline dtype wins when present. The span is validated with
     ``validate_span`` so range and boundary errors surface before any I/O.
     """
-    parsed = parse_tag(text)
+    prof = profile or DEFAULT_PROFILE
+    resolved_dtype = dtype if dtype is not None else default_dtype
+    parsed = parse_tag(text, profile=prof)
     address = parsed.address
     bit_like = address.bit is not None or address.device is not Device.D
     inline = DType(parsed.dtype) if parsed.dtype is not None else None
     if bit_like:
-        if default_dtype is not None and default_dtype is not DType.BIT:
+        if resolved_dtype is not None and resolved_dtype is not DType.BIT:
             raise DeltaValueError(
-                f"{parsed.display} is a bit tag: only DType.BIT is valid, got {default_dtype.value}"
+                f"{parsed.display} is a bit tag: only DType.BIT is valid, got {resolved_dtype.value}"
             )
-        dtype = DType.BIT
+        target_dtype = DType.BIT
     else:
         if inline is not None:
-            dtype = inline
-        elif default_dtype is not None:
-            dtype = default_dtype
+            target_dtype = inline
+        elif resolved_dtype is not None:
+            target_dtype = resolved_dtype
         else:
-            dtype = DType.U16
-    width = dtype.width
-    validate_span(address, width, write=False)
-    return Tag(name=parsed.display, address=address, dtype=dtype, width=width)
+            target_dtype = DType.U16
+    width = target_dtype.width
+    validate_span(address, width, write=False, profile=prof)
+    return Tag(name=parsed.display, address=address, dtype=target_dtype, width=width)
 
 
-def make_tags(texts: Sequence[str], default_dtype: DType | None = None) -> list[Tag]:
+def make_tags(
+    texts: Sequence[str],
+    default_dtype: DType | None = None,
+    *,
+    dtype: DType | None = None,
+    profile: SeriesProfile | None = None,
+) -> list[Tag]:
     """Build validated :class:`Tag` objects for every tag text in *texts*."""
-    return [make_tag(text, default_dtype) for text in texts]
+    return [make_tag(text, default_dtype, dtype=dtype, profile=profile) for text in texts]
 
 
 def plan_reads(
@@ -150,7 +165,7 @@ def plan_reads(
         span_end = 0
         group_block = -1
         for start, end, order, tag in items:
-            tag_block = block_for(tag.address.device, tag.address.index)
+            tag_block = tag.address.block
             if (
                 chunk
                 and tag_block == group_block
@@ -189,12 +204,14 @@ def _append_group(
 
 
 def plan_chunks(
-    address: Address,
-    value_width: int,
-    value_count: int,
-    *,
+    address: TagAddress | Tag | None = None,
+    value_width: int = 1,
+    value_count: int = 1,
     max_registers: int = 100,
     max_bits: int = 256,
+    profile: SeriesProfile | None = None,
+    *,
+    start: TagAddress | Tag | None = None,
 ) -> list[Chunk]:
     """Split a bulk value range into PDU-sized :class:`Chunk` objects.
 
@@ -206,26 +223,43 @@ def plan_chunks(
     ``max_bits`` for M/X/Y). This is the single place that guarantees a
     32-bit value is never divided across PDUs.
     """
+    target = address if address is not None else start
+    if target is None:
+        raise ValueError("address or start must be specified")
+    if isinstance(target, Address):
+        addr = target
+    elif hasattr(target, "address") and isinstance(target.address, Address):
+        addr = target.address
+    else:
+        raise TypeError(f"expected Address, ParsedTag, or Tag, got {type(target)!r}")
+
     if value_count < 1:
         raise DeltaValueError(f"value_count must be at least 1, got {value_count}")
     if value_width < 1:
         raise DeltaValueError(f"value_width must be at least 1, got {value_width}")
-    device = address.device
+
+    prof = profile or DEFAULT_PROFILE
+    device = addr.device
     total = value_count * value_width if device is Device.D else value_count
-    validate_span(address, total, write=False, allow_block_crossing=True)
+    validate_span(addr, total, write=False, allow_block_crossing=True, profile=prof)
     cap = max_registers if device is Device.D else max_bits
-    split_supported = device in (Device.D, Device.M)
+
+    split_boundary: int | None = None
+    if device is Device.D:
+        split_boundary = prof.d_split_boundary
+    elif device is Device.M:
+        split_boundary = prof.m_split_boundary
 
     chunks: list[Chunk] = []
     first = 0
     values = 0
     first_block = -1
     for i in range(value_count):
-        low = address.index + i * value_width
+        low = addr.index + i * value_width
         high = low + value_width - 1
-        value_block = block_for(device, low)
-        if split_supported and value_block != block_for(device, high):
-            split = 4096 if device is Device.D else 1536
+        value_block = block_for(device, low, profile=prof)
+        if split_boundary is not None and value_block != block_for(device, high, profile=prof):
+            split = split_boundary + 1
             raise BlockBoundaryError(
                 f"value {i} at {device.value}{low} spanning {value_width} "
                 f"crosses the {device.value}{split - 1}|{device.value}{split} "
@@ -234,7 +268,7 @@ def plan_chunks(
         if values and ((values + 1) * value_width > cap or value_block != first_block):
             chunks.append(
                 Chunk(
-                    start=wire_for(device, address.index + first * value_width),
+                    start=wire_for(device, addr.index + first * value_width, profile=prof),
                     count=values * value_width,
                     first=first,
                     values=values,
@@ -247,7 +281,7 @@ def plan_chunks(
     if values:
         chunks.append(
             Chunk(
-                start=wire_for(device, address.index + first * value_width),
+                start=wire_for(device, addr.index + first * value_width, profile=prof),
                 count=values * value_width,
                 first=first,
                 values=values,
