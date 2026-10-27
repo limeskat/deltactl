@@ -39,16 +39,16 @@ jobs:
         run: ruff format --check .
 
       - name: Type check with mypy
-        run: mypy src/delta_plc
+        run: mypy src/deltactl
 
       - name: Run test suite with coverage
         run: pytest --cov-fail-under=85
 
       - name: Enforce addressing coverage floor (>=90%)
-        run: coverage report --include="src/delta_plc/addressing.py" --fail-under=90
+        run: coverage report --include="src/deltactl/addressing.py" --fail-under=90
 
       - name: Enforce packing coverage floor (>=90%)
-        run: coverage report --include="src/delta_plc/packing.py" --fail-under=90
+        run: coverage report --include="src/deltactl/packing.py" --fail-under=90
 
       - name: Enforce planning coverage floor (>=90%)
-        run: coverage report --include="src/delta_plc/planning.py" --fail-under=90
+        run: coverage report --include="src/deltactl/planning.py" --fail-under=90

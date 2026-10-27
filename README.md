@@ -1,4 +1,4 @@
-# Delta DVP PLC Driver & CLI (`delta-plc-driver`)
+# Delta DVP PLC Driver & CLI (deltactl)
 
 A production-ready, cross-platform Python library and bench CLI for Delta DVP PLCs over Modbus TCP.
 
@@ -13,7 +13,7 @@ Tested against physical **Delta DVP-12SE** hardware and designed for SCADA/HMI b
 - **Strict Write Safety:** Read-only `X` inputs (`FC02`), full-span guards on critical registers (`D1000–D1002`, `D1010–D1012`, `D1067`, `M1000–M1003`, `M1067`), fail-fast writes, socket closure on write timeouts, and atomic client-side read-modify-write for bit-of-word updates.
 - **Hardware-Aware Planning:** Automatic coalescing and chunking conforming to Delta's 100-register / 256-bit PDU limits and split memory block boundaries (`D4095/D4096`, `M1535/M1536`).
 - **Telemetry Poller:** Multi-tag polling with coalescing, deadband filtering, report-by-exception (RBE), configurable heartbeat snapshots, and NDJSON/CSV streaming.
-- **Bench Diagnostic CLI (`plc`):** Register reads, writes, live watching, passive/active network link diagnostics (`plc doctor`), and an accurate local mock simulator (`plc mock`).
+- **Bench Diagnostic CLI (`deltactl`):** Register reads, writes, live watching, passive/active network link diagnostics (`deltactl doctor`), and an accurate local mock simulator (`deltactl mock`).
 
 ---
 
@@ -24,7 +24,7 @@ Requires **Python ≥ 3.10** and pins `pymodbus>=3.16.1,<4` (Modbus datastore an
 ```bash
 # Clone the repository
 git clone https://github.com/deltactl/deltactl.git
-cd deltactl/deltactl-plc-driver
+cd deltactl
 
 # Install in editable mode with development dependencies
 pip install -e ".[dev]"
@@ -33,7 +33,7 @@ pip install -e ".[dev]"
 Verify installation:
 
 ```bash
-plc --version
+deltactl --version
 ```
 
 ---
@@ -44,7 +44,7 @@ plc --version
 
 ```python
 import asyncio
-from delta_plc import AsyncDeltaPLC
+from deltactl import AsyncDeltaPLC
 
 
 async def main():
@@ -65,7 +65,7 @@ asyncio.run(main())
 ### 2. Synchronous Client (`DeltaPLC`)
 
 ```python
-from delta_plc import DeltaPLC
+from deltactl import DeltaPLC
 
 with DeltaPLC("192.168.1.5", port=502, unit=1) as plc:
     val = plc.read("D100")
@@ -73,22 +73,22 @@ with DeltaPLC("192.168.1.5", port=502, unit=1) as plc:
     print(f"D100={val}, D9000 updated")
 ```
 
-### 3. Bench CLI (`plc`)
+### 3. Bench CLI (`deltactl`)
 
 ```bash
 # Read registers (single, multiple, typed)
-plc read D1000 M1000 X0 Y0 --host 192.168.1.5
-plc read D100:f32 D104:i32 --host 192.168.1.5
-plc read D0 --count 8 --host 192.168.1.5
+deltactl read D1000 M1000 X0 Y0 --host 192.168.1.5
+deltactl read D100:f32 D104:i32 --host 192.168.1.5
+deltactl read D0 --count 8 --host 192.168.1.5
 
 # Write registers (single, 32-bit float, bit-of-word, dry-run inspection)
-plc write D9000 1234 --host 192.168.1.5
-plc write --dtype f32 D9000 -12.5 --host 192.168.1.5
-plc write D100.3 true --host 192.168.1.5
-plc write D9000 42 --dry-run --host 192.168.1.5
+deltactl write D9000 1234 --host 192.168.1.5
+deltactl write --dtype f32 D9000 -12.5 --host 192.168.1.5
+deltactl write D100.3 true --host 192.168.1.5
+deltactl write D9000 42 --dry-run --host 192.168.1.5
 
 # Stream telemetry with deadband and change detection
-plc watch D1000 D1010 M1000 --on-change --deadband 0.5 --format ndjson --host 192.168.1.5
+deltactl watch D1000 D1010 M1000 --on-change --deadband 0.5 --format ndjson --host 192.168.1.5
 ```
 
 ---
@@ -122,8 +122,8 @@ Delta DVP PLCs store 32-bit values in **CDAB word order** (least-significant 16-
 ### Specifying Data Types
 
 You can specify data types inline on any D tag or via the `--dtype` CLI flag:
-- **Inline Tag Syntax:** `plc read D100:f32 D104:i32`
-- **CLI Flag:** `plc read D100 --dtype f32` or `plc write --dtype f32 D200 -12.5`
+- **Inline Tag Syntax:** `deltactl read D100:f32 D104:i32`
+- **CLI Flag:** `deltactl read D100 --dtype f32` or `deltactl write --dtype f32 D200 -12.5`
 
 ---
 
@@ -168,30 +168,30 @@ To prevent accidental hardware lockups, watchdog timeouts, and machine disruptio
 
 ---
 
-## Network Diagnostics (`plc doctor`)
+## Network Diagnostics (`deltactl doctor`)
 
 The `doctor` command provides non-intrusive network and PLC health diagnostics:
 
 ```bash
 # Passive mode (no host required): lists local interfaces and IP routing
-plc doctor
+deltactl doctor
 
 # Active check against a PLC
-plc doctor --host 192.168.1.5
+deltactl doctor --host 192.168.1.5
 
 # Output machine-readable JSON
-plc doctor --host 192.168.1.5 --json
+deltactl doctor --host 192.168.1.5 --json
 
 # Strict mode: treat PLC warnings (e.g. M1067 set, scan time >= 80% WDT) as errors (exit code 1)
-plc doctor --host 192.168.1.5 --strict
+deltactl doctor --host 192.168.1.5 --strict
 
 # Discover active PLCs across a subnet (opt-in concurrency probe)
-plc doctor --scan 192.168.1.0/24
+deltactl doctor --scan 192.168.1.0/24
 ```
 
 ### Subnet Alignment Hints
 
-If the PLC is physically reachable or routed on an interface with an incompatible subnet, `plc doctor` provides copy-pasteable configuration commands:
+If the PLC is physically reachable or routed on an interface with an incompatible subnet, `deltactl doctor` provides copy-pasteable configuration commands:
 - **Linux:** `sudo ip addr add 192.168.1.250/24 dev eth0` or `nmcli connection modify ...`
 - **Windows:** `netsh interface ipv4 add address "Ethernet" 192.168.1.250 255.255.255.0`
 
@@ -199,22 +199,22 @@ If the PLC is physically reachable or routed on an interface with an incompatibl
 
 ---
 
-## Hardware-Faithful Mock Server (`plc mock`)
+## Hardware-Faithful Mock Server (`deltactl mock`)
 
 For local testing, CI, and offline development, the built-in mock server replicates hardware-verified DVP behavior:
 
 ```bash
 # Start mock on port 5020
-plc mock --listen 127.0.0.1:5020
+deltactl mock --listen 127.0.0.1:5020
 
 # Seed specific register values
-plc mock --listen 127.0.0.1:5020 --seed D100=42 M0=true
+deltactl mock --listen 127.0.0.1:5020 --seed D100=42 M0=true
 
 # Simulate a fault code and CPU STOP state
-plc mock --listen 127.0.0.1:5020 --fault-code 5 --plc-stop
+deltactl mock --listen 127.0.0.1:5020 --fault-code 5 --plc-stop
 
 # Enable dynamic scan time simulation (triangular wave on D1010-D1012)
-plc mock --listen 127.0.0.1:5020 --live-scan
+deltactl mock --listen 127.0.0.1:5020 --live-scan
 ```
 
 The mock strictly enforces:
@@ -267,8 +267,8 @@ CLI flags (e.g. `--host`, `--port`) always take precedence over environment vari
 - **`Connection refused` / `Cannot connect to host:502`:**
   - Verify physical cabling and link LED.
   - Check whether another client or WPLSoft session has occupied all 2–4 socket slots.
-  - Run `plc doctor --host <IP>` to check interface, ICMP, and port availability.
-  - Run `plc doctor --scan <CIDR>` if the PLC IP address may have changed.
+  - Run `deltactl doctor --host <IP>` to check interface, ICMP, and port availability.
+  - Run `deltactl doctor --scan <CIDR>` if the PLC IP address may have changed.
 - **`Timeout during write` / `Socket closed`:**
   - The driver closes the socket on write timeouts to avoid executing buffered stale writes. Ensure network latency is stable and the PLC cycle time is normal.
 - **`ReadOnlyAddressError: X0 is read-only`:**
@@ -276,7 +276,7 @@ CLI flags (e.g. `--host`, `--port`) always take precedence over environment vari
 - **`DeltaAddressError: D1000 is guarded against writes`:**
   - System registers (`D1000–D1002`, `D1010–D1012`, `D1067`, `M1000–M1003`, `M1067`) are write-protected by driver policy to safeguard PLC operation.
 - **Subnet Mismatch:**
-  - If your PC is on `192.168.0.x` and the PLC is on `192.168.1.5`, run `plc doctor` to view the recommended `ip addr add` or `netsh` alias commands.
+  - If your PC is on `192.168.0.x` and the PLC is on `192.168.1.5`, run `deltactl doctor` to view the recommended `ip addr add` or `netsh` alias commands.
 - **PLC Stops Answering Entirely:**
   - Delta DVP Ethernet stacks may crash when subjected to malformed raw packets or socket exhaustion. Power-cycle the PLC unit.
 
