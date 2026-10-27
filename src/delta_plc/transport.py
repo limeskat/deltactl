@@ -1,13 +1,15 @@
-"""Async Delta DVP transport: connection, reads, retries, and quality results.
+"""Async Delta DVP transport: connection, reads, writes, retries, quality.
 
 One :class:`asyncio.Lock` serializes every request on an instance, so a client
 uses exactly one socket and never pipelines. Public operations acquire the lock
 once and then call lock-free internals; that is what makes nesting safe.
 
 Reads are planned into coalesced :class:`ReadGroup` objects (see ``planning``)
-and executed group by group. A short (truncated) response is a protocol error
-and is never padded or retried; only transport and timeout failures are retried,
-and a connection/timeout failure stops the rest of the plan early.
+and executed group by group. Writes validate their whole span before the lock
+is taken, then chunk by PDU and by memory block. A short (truncated) response
+is a protocol error and is never padded or retried; only transport and timeout
+failures are retried, and a timed-out write closes its socket so a late reply
+can never be matched to a later request.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from typing import Any
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ConnectionException, ModbusException, ModbusIOException
 
-from .addressing import Device
+from .addressing import Address, Device, validate_span
 from .errors import (
     DeltaConnectionError,
     DeltaModbusException,
@@ -31,7 +33,16 @@ from .errors import (
     DeltaValueError,
     NotConnectedError,
 )
-from .packing import DType, decode_value, decode_values, get_bit
+from .packing import (
+    DType,
+    decode_value,
+    decode_values,
+    encode_value,
+    encode_values,
+    get_bit,
+    mask_u16,
+    set_bit,
+)
 from .planning import ReadGroup, Tag, make_tag, make_tags, plan_chunks, plan_reads
 
 __all__ = ["AsyncDeltaPLC", "GroupResult", "decode_group_values"]
@@ -49,6 +60,14 @@ _METHOD_FOR: dict[int, str] = {
     3: "read_holding_registers",
     1: "read_coils",
     2: "read_discrete_inputs",
+}
+
+#: pymodbus method name per write function code.
+_WRITE_METHOD_FOR: dict[int, str] = {
+    6: "write_register",
+    16: "write_registers",
+    5: "write_coil",
+    15: "write_coils",
 }
 
 #: Backoff between read retries; the last value repeats.
@@ -105,6 +124,64 @@ def decode_group_values(
 def _function_for(tag: Tag) -> int:
     """Read function code for *tag*'s device."""
     return _FUNCTION_FOR[tag.address.device]
+
+
+def _as_bit(value: Any) -> bool:
+    """Coerce ``bool``/``0``/``1`` to a real ``bool``; else ``DeltaValueError``."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    raise DeltaValueError(f"{value!r} is not a valid bit value; expected bool, 0, or 1")
+
+
+def _wire_bits(value: Any) -> list[bool]:
+    """Coerce a bit or an iterable of bits into a list of ``bool``."""
+    if isinstance(value, (bool, int)):
+        return [_as_bit(value)]
+    try:
+        return [_as_bit(item) for item in value]
+    except TypeError:
+        raise DeltaValueError(
+            f"{value!r} is not a valid bit value or sequence of bits"
+        ) from None
+
+
+def _masked_values(value: Any) -> list[int]:
+    """Mask a plain-D scalar or sequence into 16-bit registers.
+
+    ``bool`` is rejected (``bool`` is an ``int`` subclass but not a register
+    value); use a ``D<n>.<bit>`` tag or ``write_bits`` for bits.
+    """
+    if isinstance(value, bool):
+        raise DeltaValueError(
+            "bool is not a valid 16-bit value; use a D<n>.<bit> tag for word bits"
+        )
+    if isinstance(value, int):
+        return [mask_u16(value)]
+    try:
+        items = list(value)
+    except TypeError:
+        raise DeltaValueError(f"{value!r} is not a valid 16-bit value") from None
+    return [_mask_element(item) for item in items]
+
+
+def _mask_element(value: Any) -> int:
+    """Mask one element of a plain-D write sequence."""
+    if isinstance(value, bool):
+        raise DeltaValueError("bool is not a valid 16-bit value in a sequence")
+    return mask_u16(value)
+
+
+def _encode_write(value: Any, dtype: DType) -> list[int]:
+    """Encode a scalar or sequence of *dtype* values into flat registers."""
+    if isinstance(value, (bool, int, float)):
+        return encode_value(value, dtype)
+    try:
+        seq = list(value)
+    except TypeError:
+        raise DeltaValueError(f"{value!r} is not a valid {dtype.value} value") from None
+    return encode_values(seq, dtype)
 
 
 class AsyncDeltaPLC:
@@ -271,7 +348,208 @@ class AsyncDeltaPLC:
             await self._ensure_connected_locked()
             return await self._read_planned_locked(groups, attempts)
 
-    # -- read internals (lock-free) ----------------------------------------
+    # -- public writes -----------------------------------------------------
+
+    async def write(self, tag: str, value: Any) -> None:
+        """Write an untyped value or sequence to *tag*.
+
+        M/X/Y and ``D<n>.<bit>`` take ``bool``/``0``/``1``; a D word takes
+        ``mask_u16`` scalars or sequences. A ``bool`` on a plain D tag is a
+        ``DeltaValueError`` (use a bit tag or ``write_bits``).
+        """
+        await self._write_untyped(tag, value)
+
+    async def write_u16(self, tag: str, value: Any) -> None:
+        """Write unsigned 16-bit values to *tag*."""
+        await self._write_typed(tag, DType.U16, value)
+
+    async def write_i16(self, tag: str, value: Any) -> None:
+        """Write signed 16-bit values to *tag*."""
+        await self._write_typed(tag, DType.I16, value)
+
+    async def write_i32(self, tag: str, value: Any) -> None:
+        """Write signed 32-bit values to *tag* (CDAB word order)."""
+        await self._write_typed(tag, DType.I32, value)
+
+    async def write_u32(self, tag: str, value: Any) -> None:
+        """Write unsigned 32-bit values to *tag* (CDAB word order)."""
+        await self._write_typed(tag, DType.U32, value)
+
+    async def write_f32(self, tag: str, value: Any) -> None:
+        """Write 32-bit floats to *tag* (CDAB word order)."""
+        await self._write_typed(tag, DType.F32, value)
+
+    async def write_bits(self, tag: str, value: Any) -> None:
+        """Write one or more M/X/Y wire bits; D tags raise ``DeltaValueError``."""
+        parsed = make_tag(tag, DType.BIT)
+        if parsed.address.device is Device.D:
+            raise DeltaValueError(
+                f"write_bits supports only M/X/Y tags; write {tag!r} as a word bit "
+                "with write('D<n>.<bit>', value) instead"
+            )
+        await self._guard_and_write(parsed, _wire_bits(value))
+
+    # -- write internals (validation is done before the lock) --------------
+
+    async def _write_untyped(self, tag: str, value: Any) -> None:
+        """Shared body of ``write``: bit tags take bits, D values mask or encode.
+
+        A plain D tag (or an inline ``:u16``) masks through ``mask_u16``; an
+        inline ``:i16``/``:i32``/``:u32``/``:f32`` tag encodes through
+        ``packing`` like the typed writes.
+        """
+        parsed = make_tag(tag)
+        values: list[Any]
+        if parsed.dtype is DType.BIT:
+            if parsed.address.device is Device.D:
+                values = [_as_bit(value)]
+            else:
+                values = _wire_bits(value)
+        elif parsed.dtype is DType.U16:
+            values = _masked_values(value)
+        else:
+            values = _encode_write(value, parsed.dtype)
+        await self._guard_and_write(parsed, values)
+
+    async def _write_typed(self, tag: str, dtype: DType, value: Any) -> None:
+        """Shared body of the typed writes; encodes through ``packing``."""
+        parsed = make_tag(tag, dtype)
+        await self._guard_and_write(parsed, _encode_write(value, parsed.dtype))
+
+    async def _guard_and_write(self, tag: Tag, values: list[Any]) -> None:
+        """Validate the full write span, then write under one lock.
+
+        The span check runs before the lock is taken, so every guard failure
+        (range, boundary, read-only) happens without sending any PDU.
+        """
+        bit_like = tag.dtype is DType.BIT
+        count = len(values) if bit_like else len(values) // tag.width
+        total = count * tag.width if tag.address.device is Device.D else count
+        validate_span(tag.address, total, write=True, allow_block_crossing=True)
+        async with self._lock:
+            await self._ensure_connected_locked()
+            await self._write_locked(tag, values)
+
+    async def _write_locked(self, tag: Tag, values: list[Any]) -> None:
+        """Write *values* for *tag* without the lock; callers must hold it.
+
+        ``values`` is the flat register list for a D word tag or the list of
+        wire bits for M/X/Y. Chunks come from ``plan_chunks``, so a single
+        32-bit value that straddles a split raises :class:`BlockBoundaryError`
+        before any PDU and bulk writes split into whole-value chunks.
+        """
+        address = tag.address
+        if address.device is Device.D and tag.dtype is DType.BIT:
+            await self._write_word_bit_locked(address, bool(values[0]))
+        elif address.device is Device.D:
+            chunks = plan_chunks(
+                address,
+                tag.width,
+                len(values) // tag.width,
+                max_registers=self.max_write_registers,
+                max_bits=self.max_write_bits,
+            )
+            for chunk in chunks:
+                registers = values[
+                    chunk.first * tag.width : (chunk.first + chunk.values) * tag.width
+                ]
+                function = 6 if chunk.values == 1 and tag.width == 1 else 16
+                await self._write_group_locked(
+                    function, chunk.start, list(registers), self.write_retries
+                )
+        else:
+            chunks = plan_chunks(
+                address,
+                1,
+                len(values),
+                max_registers=self.max_write_registers,
+                max_bits=self.max_write_bits,
+            )
+            for chunk in chunks:
+                bits = values[chunk.first : chunk.first + chunk.values]
+                function = 5 if chunk.values == 1 else 15
+                await self._write_group_locked(
+                    function, chunk.start, list(bits), self.write_retries
+                )
+
+    async def _write_word_bit_locked(self, address: Address, value: bool) -> None:
+        """Set one D word bit by reading the word and writing it back (RMW)."""
+        bit = address.bit
+        assert bit is not None
+        group = ReadGroup(3, address.wire, 1, ())
+        registers, _, _ = await self._read_group_locked(group, self.read_retries)
+        word = set_bit(registers[0], bit, value)
+        await self._write_group_locked(6, address.wire, [word], self.write_retries)
+
+    async def _write_group_locked(
+        self, function: int, start: int, values: list[Any], retries: int
+    ) -> None:
+        """Send one write PDU with up to *retries* extra attempts; or raise.
+
+        A final timeout closes the socket first: a late response must never be
+        matched to a later request. The next operation reconnects. Modbus
+        exception responses are mapped and never retried.
+        """
+        attempt = 0
+        while True:
+            try:
+                await self._write_once(function, start, values)
+                return
+            except (DeltaConnectionError, DeltaTimeoutError) as exc:
+                if attempt >= retries:
+                    if isinstance(exc, DeltaTimeoutError):
+                        self._client.close()
+                    raise
+                if not self.is_connected:
+                    try:
+                        await self._connect_locked()
+                    except DeltaPLCError:
+                        pass
+                await asyncio.sleep(
+                    _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                )
+                attempt += 1
+
+    async def _write_once(
+        self, function: int, start: int, values: list[Any]
+    ) -> None:
+        """Issue one write PDU; a non-error response is success.
+
+        Errors map exactly as ``_read_once``: timeouts to ``DeltaTimeoutError``,
+        dropped connections to ``DeltaConnectionError``, a Modbus exception
+        response to ``DeltaModbusException``, and anything else Modbus-shaped to
+        ``DeltaProtocolError``.
+        """
+        try:
+            method_name = _WRITE_METHOD_FOR[function]
+        except KeyError:
+            raise DeltaProtocolError(
+                f"unsupported write function code {function}"
+            ) from None
+        argument: Any = values[0] if function in (5, 6) else values
+        try:
+            response = await getattr(self._client, method_name)(
+                start, argument, device_id=self.unit
+            )
+        except ModbusIOException as exc:
+            raise DeltaTimeoutError(f"{function}@{start}: {exc}") from exc
+        except asyncio.TimeoutError as exc:
+            raise DeltaTimeoutError(f"{function}@{start}: {exc}") from exc
+        except ConnectionException as exc:
+            raise DeltaConnectionError(f"{function}@{start}: {exc}") from exc
+        except OSError as exc:
+            raise DeltaConnectionError(f"{function}@{start}: {exc}") from exc
+        except ModbusException as exc:
+            raise DeltaProtocolError(f"{function}@{start}: {exc}") from exc
+
+        if response.isError():
+            function_code = getattr(response, "function_code", function) & 0x7F
+            code = getattr(response, "exception_code", 0)
+            raise DeltaModbusException(function_code, int(code))
+
+    # -- read internals ----------------------------------------------------
+    # The ``_read_*`` entry points acquire the lock themselves; the
+    # ``*_locked`` helpers below run without it and require the caller to hold it.
 
     async def _read_typed(self, tag: str, dtype: DType | None, count: int) -> Any:
         """Shared body of ``read`` and the typed reads; validates before I/O."""
