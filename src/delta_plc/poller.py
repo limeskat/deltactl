@@ -11,23 +11,38 @@ While disconnected the poller emits a ``BAD`` frame per cycle and retries
 by ``0.8 + 0.4 * rand()``). The clock, sleep, and random source are injectable
 so tests run deterministically, and ``_poll_once`` is the single-cycle seam
 used both by :meth:`TagPoller.run` and by filter tests.
+
+Filtering happens inside ``_poll_once``: ``on_change`` emits only values that
+moved past their deadband, a quality change or heartbeat promotes a cycle to a
+full snapshot, and ``BAD`` bypasses filtering entirely. The writers at the top
+of this module serialize frames as NDJSON, CSV, or an ASCII table for the CLI.
 """
 
 from __future__ import annotations
 
 import asyncio
+import csv
+import json
+import math
 import random
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import IO, Any, Protocol
 
 from .errors import DeltaPLCError, PollerError
 from .planning import ReadGroup, Tag, make_tag, plan_reads
 from .transport import GroupResult, decode_group_values
 
-__all__ = ["Frame", "FrameWriter", "TagPoller"]
+__all__ = [
+    "CsvWriter",
+    "Frame",
+    "FrameWriter",
+    "NdjsonWriter",
+    "TableWriter",
+    "TagPoller",
+]
 
 #: Reconnect delays in seconds; the last value repeats. Each one is scaled by
 #: ``0.8 + 0.4 * rand()`` so a fleet of pollers does not reconnect in lockstep.
@@ -80,6 +95,149 @@ class FrameWriter(Protocol):
     def close(self) -> None: ...
 
 
+def _sanitize(value: Any) -> Any:
+    """Recursively replace non-finite floats with ``None`` for strict JSON.
+
+    ``Frame`` values may carry ``nan``/``±inf``; NDJSON must stay valid JSON,
+    so every float is checked and containers are rebuilt along the way.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _sanitize(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize(item) for item in value]
+    return value
+
+
+class NdjsonWriter:
+    """Write one compact JSON object per frame, newline-delimited.
+
+    Non-finite floats are sanitized to ``null`` before a strict ``json.dumps``
+    (``allow_nan=False``) so every line is valid JSON. Each frame is flushed.
+    """
+
+    def __init__(self, stream: IO[str]) -> None:
+        self._stream = stream
+
+    def write(self, frame: Frame) -> None:
+        """Serialize *frame* as one sanitized JSON line and flush."""
+        payload = _sanitize(frame.to_dict())
+        self._stream.write(
+            json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n"
+        )
+        self.flush()
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def close(self) -> None:
+        """Flush only: the caller owns the underlying stream's lifetime."""
+        self.flush()
+
+
+class CsvWriter:
+    """Write frames as CSV: a fixed schema followed by the requested tags.
+
+    The header is written once, before the first row. Values are formatted for
+    humans and spreadsheets: bools as ``true``/``false``, finite floats via
+    ``repr``, non-finite floats as ``nan``/``inf``, ints via ``str``, and
+    missing tags as an empty field. Everything is emitted through ``csv.writer``
+    so the ``error`` text is quoted correctly.
+    """
+
+    _BASE: tuple[str, ...] = ("ts", "seq", "rtt_ms", "quality", "error")
+
+    def __init__(self, stream: IO[str], tags: Sequence[str]) -> None:
+        self._stream = stream
+        self._tags = tuple(tags)
+        self._writer = csv.writer(stream)
+        self._header_written = False
+
+    def write(self, frame: Frame) -> None:
+        """Write the header once, then one row for *frame*."""
+        if not self._header_written:
+            self._writer.writerow([*self._BASE, *self._tags])
+            self._header_written = True
+        row: list[object] = [
+            frame.ts,
+            frame.seq,
+            _format_scalar(frame.rtt_ms),
+            frame.quality,
+            frame.error if frame.error is not None else "",
+        ]
+        row.extend(_format_scalar(frame.values.get(name)) for name in self._tags)
+        self._writer.writerow(row)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def close(self) -> None:
+        """Flush only: the caller owns the underlying stream's lifetime."""
+        self.flush()
+
+
+def _format_scalar(value: float | bool | None) -> str:
+    """Render one value as CSV/table text; ``None`` (missing) becomes ``""``."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return repr(value) if math.isfinite(value) else str(value)
+    return str(value)
+
+
+class TableWriter:
+    """Write frames as a fixed-width ASCII table, one row per frame.
+
+    Missing values render as ``-``. The table contains no ANSI escapes so it is
+    safe to pipe or redirect.
+    """
+
+    _BASE: tuple[str, ...] = ("ts", "seq", "rtt_ms", "quality", "error")
+
+    def __init__(self, stream: IO[str], tags: Sequence[str]) -> None:
+        self._stream = stream
+        self._tags = tuple(tags)
+        self._columns = (*self._BASE, *self._tags)
+        self._widths = tuple(max(len(name), 6) for name in self._columns)
+        self._header_written = False
+
+    def write(self, frame: Frame) -> None:
+        """Write the header once, then one ASCII row for *frame*."""
+        if not self._header_written:
+            self._stream.write(self._line(self._columns))
+            self._stream.write(self._line(tuple("-" * width for width in self._widths)))
+            self._header_written = True
+        cells = [
+            frame.ts,
+            str(frame.seq),
+            _format_scalar(frame.rtt_ms),
+            frame.quality,
+            frame.error if frame.error is not None else "-",
+        ]
+        cells.extend(
+            _format_scalar(frame.values.get(name)) or "-" for name in self._tags
+        )
+        self._stream.write(self._line(cells))
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def close(self) -> None:
+        """Flush only: the caller owns the underlying stream's lifetime."""
+        self.flush()
+
+    def _line(self, cells: Sequence[str]) -> str:
+        """Left-justify *cells* into the fixed columns and end the line."""
+        return (
+            "  ".join(cell.ljust(width) for cell, width in zip(cells, self._widths))
+            .rstrip()
+            + "\n"
+        )
+
+
 class _PollClient(Protocol):
     """The slice of the async client the poller depends on."""
 
@@ -102,8 +260,10 @@ class TagPoller:
     """Poll a fixed set of tags into frames, with quality and reconnect policy.
 
     Tags are parsed and planned once in ``__init__``, so every cycle reuses the
-    same groups. ``on_change``, ``deadband``, and ``heartbeat`` are stored for
-    the filter layer; this core emits one frame per cycle.
+    same groups. ``on_change``, ``deadband``, and ``heartbeat`` drive the emit
+    filter: with ``on_change`` the poller sends only values that moved past
+    their per-tag (or global) deadband, while the first cycle, a quality change,
+    a due heartbeat, and any ``BAD`` cycle send every available value.
     """
 
     def __init__(
@@ -146,6 +306,13 @@ class TagPoller:
         self._backoff_step = 0
         self._next_attempt_at = float("-inf")
         self._last_error: str | None = None
+        # Filter state: per-tag deadbands and the last *emitted* values/quality.
+        self._deadbands: dict[str, float | None] = {
+            tag.name: tag.deadband for tag in self._tags
+        }
+        self._last_emitted: dict[str, int | float | bool] = {}
+        self._last_quality: str | None = None
+        self._last_emit_time: float | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -185,9 +352,13 @@ class TagPoller:
     # -- one cycle ---------------------------------------------------------
 
     async def _poll_once(self, now: float, writer: FrameWriter | None) -> int:
-        """Run one poll cycle and emit at most one frame; return frames emitted.
+        """Run one poll cycle, apply the emit filters, and return frames emitted.
 
-        *now* drives reconnect scheduling so tests can advance a fake clock.
+        *now* drives both reconnect scheduling and heartbeat timing so tests can
+        advance a fake clock. A frame is emitted when it is the first cycle, the
+        quality changed, a heartbeat is due, ``on_change`` is off, or some value
+        changed beyond its deadband; ``BAD`` frames bypass filtering. The writer
+        is flushed after each emitted frame.
         """
         if self._client.is_connected:
             quality, values, rtt_ms, error = await self._read_cycle()
@@ -195,17 +366,82 @@ class TagPoller:
             error = await self._reconnect(now)
             quality, values, rtt_ms = "BAD", {}, 0.0
         self._seq += 1
+        selected = self._select(now, quality, values)
+        if selected is None:
+            return 0
+        emitted, heartbeat = selected
         frame = Frame(
             ts=datetime.now().astimezone().isoformat(timespec="milliseconds"),
             seq=self._seq,
             rtt_ms=rtt_ms,
             quality=quality,
-            values=values,
+            values=emitted,
             error=error,
+            heartbeat=heartbeat,
         )
+        self._last_emit_time = now
+        self._last_emitted.update(emitted)
+        self._last_quality = quality
         if writer is not None:
             writer.write(frame)
+            writer.flush()
         return 1
+
+    def _select(
+        self,
+        now: float,
+        quality: str,
+        values: dict[str, int | float | bool],
+    ) -> tuple[dict[str, int | float | bool], bool] | None:
+        """Choose what to emit for this cycle, or ``None`` to suppress it.
+
+        Returns the values to send plus whether this is a heartbeat snapshot.
+        ``BAD`` (disconnected or every group failed) bypasses filtering, as does
+        the first cycle and any quality change, so consumers always see the
+        current state when it materially changed.
+        """
+        heartbeat_due = self._heartbeat_due(now)
+        if quality == "BAD":
+            return dict(values), heartbeat_due
+        if self._last_quality is None or quality != self._last_quality:
+            return dict(values), heartbeat_due
+        if heartbeat_due:
+            return dict(values), True
+        if not self._on_change:
+            return dict(values), False
+        changed = {
+            name: value for name, value in values.items() if self._changed(name, value)
+        }
+        if not changed:
+            return None
+        return changed, False
+
+    def _heartbeat_due(self, now: float) -> bool:
+        """True when a liveness snapshot is due; ``heartbeat=0`` disables it."""
+        if self._heartbeat <= 0 or self._last_emit_time is None:
+            return False
+        return now - self._last_emit_time >= self._heartbeat
+
+    def _threshold(self, name: str) -> float:
+        """Deadband for *name*: its tag override, else the poller default."""
+        deadband = self._deadbands.get(name)
+        return self._deadband if deadband is None else deadband
+
+    def _changed(self, name: str, value: float | bool) -> bool:
+        """True when *value* differs from the last **emitted** value of *name*.
+
+        Bools change on strict inequality; numbers must move at least their
+        deadband, and a zero delta is never a change even at deadband ``0``.
+        A tag with no emitted history counts as changed.
+        """
+        if name not in self._last_emitted:
+            return True
+        last = self._last_emitted[name]
+        if isinstance(value, bool) or isinstance(last, bool):
+            return value != last
+        if value == last:
+            return False
+        return abs(value - last) >= self._threshold(name)
 
     async def _read_cycle(
         self,
