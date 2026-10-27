@@ -47,5 +47,6 @@ line-length = 100
 extend-exclude = ["docs"]
 
 [tool.mypy]
+python_version = "3.10"
 files = ["src/delta_plc"]
 disallow_untyped_defs = true

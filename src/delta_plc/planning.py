@@ -91,7 +91,7 @@ def make_tag(text: str, default_dtype: DType | None = None) -> Tag:
             raise DeltaValueError(
                 f"{parsed.display} is a bit tag: only DType.BIT is valid, got {default_dtype.value}"
             )
-        dtype = DType.BIT if inline is None else inline
+        dtype = DType.BIT
     else:
         if inline is not None:
             dtype = inline

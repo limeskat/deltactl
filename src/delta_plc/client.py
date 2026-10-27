@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import concurrent.futures
 import contextlib
 import threading
 from collections.abc import Callable, Coroutine, Sequence
 from concurrent.futures import Future
 from typing import Any, TypeVar
 
+from .errors import DeltaTimeoutError
 from .planning import ReadGroup
 from .transport import AsyncDeltaPLC, GroupResult
 
@@ -119,6 +121,7 @@ class DeltaPLC:
         }
         self.sync_call_timeout = sync_call_timeout
         self._loop_thread = _LoopThread()
+        self._submission_lock = threading.Lock()
         self._closed = False
         # pymodbus captures the running loop in its constructor, so the async
         # client must be built on the loop thread, not on the caller's thread.
@@ -144,8 +147,7 @@ class DeltaPLC:
         if self._closed:
             return
         self._closed = True
-        if self._loop_thread.thread_id is None:
-            return
+        atexit.unregister(self.close)
         future = self._loop_thread.submit(self._shutdown_client())
         try:
             with contextlib.suppress(Exception):
@@ -248,9 +250,17 @@ class DeltaPLC:
         the check raises.
         """
         self._check_loop_thread()
-        if self._closed:
-            raise RuntimeError("DeltaPLC is closed")
-        return self._loop_thread.submit(factory()).result(self.sync_call_timeout)
+        with self._submission_lock:
+            if self._closed:
+                raise RuntimeError("DeltaPLC is closed")
+            future = self._loop_thread.submit(factory())
+            try:
+                return future.result(self.sync_call_timeout)
+            except (concurrent.futures.TimeoutError, TimeoutError) as exc:
+                future.cancel()
+                raise DeltaTimeoutError(
+                    f"sync call timed out after {self.sync_call_timeout}s"
+                ) from exc
 
     def _check_loop_thread(self) -> None:
         """Reject calls made from the loop thread, which would deadlock."""

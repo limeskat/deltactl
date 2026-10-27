@@ -331,6 +331,10 @@ class TagPoller:
                 break
             cycle_start = self._clock()
             emitted += await self._poll_once(cycle_start, writer)
+            if (count is not None and emitted >= count) or (
+                duration is not None and self._clock() - start >= duration
+            ):
+                break
             elapsed = self._clock() - cycle_start
             await self._sleep(max(0.0, self._interval - elapsed))
         return emitted

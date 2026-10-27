@@ -120,5 +120,41 @@ async def test_duration_and_count():
     client, clock = FakeClient(), FakeClock()
     poller = TagPoller(client, ["D100"], interval=1.0, clock=clock.now, sleep=clock.sleep)
     assert await poller.run(duration=0) == 0
+    assert await poller.run(count=0) == 0
     poller = TagPoller(client, ["D100"], interval=1.0, clock=clock.now, sleep=clock.sleep)
     assert await poller.run(count=3) == 3
+
+
+async def test_run_count_does_not_sleep_after_final_cycle():
+    client, clock = FakeClient(), FakeClock()
+    poller = TagPoller(client, ["D100"], interval=100.0, clock=clock.now, sleep=clock.sleep)
+    emitted = await poller.run(count=1)
+    assert emitted == 1
+    assert clock.t == 0.0
+
+
+async def test_run_duration_does_not_sleep_after_duration_reached():
+    client = FakeClient()
+    t = [0.0]
+
+    def now():
+        return t[0]
+
+    sleep_count = 0
+
+    async def sleep(seconds):
+        nonlocal sleep_count
+        sleep_count += 1
+        t[0] += seconds
+
+    poller = TagPoller(client, ["D100"], interval=100.0, clock=now, sleep=sleep)
+    orig_read = client.read_planned
+
+    async def slow_read(groups):
+        t[0] += 2.0
+        return await orig_read(groups)
+
+    client.read_planned = slow_read
+    emitted = await poller.run(duration=1.0)
+    assert emitted == 1
+    assert sleep_count == 0
