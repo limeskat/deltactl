@@ -2,6 +2,7 @@
 import pytest
 from delta_plc.doctor import (
     CheckResult, plc_warnings, scan_subnet, subnet_hints, verdict, run_doctor,
+    _check_interface_sync, _check_icmp_sync,
 )
 from delta_plc.mock import MockServer
 
@@ -72,3 +73,71 @@ async def test_scan_opt_in(monkeypatch):
     monkeypatch.setattr("delta_plc.doctor._probe_tcp", fake_probe)
     hosts = await scan_subnet("192.168.1.0/29")
     assert "192.168.1.5" in hosts and calls
+
+async def test_doctor_passive_check_set():
+    report = await run_doctor()
+    names = {c.name for c in report.checks}
+    assert names == {"interface", "address", "arp"}
+
+def test_powershell_parameter_binding(monkeypatch):
+    recorded_cmds = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "Ethernet0\n"
+
+    def fake_run(cmd, *args, **kwargs):
+        recorded_cmds.append(list(cmd))
+        return FakeResult()
+
+    monkeypatch.setattr("delta_plc.doctor.platform.system", lambda: "Windows")
+    monkeypatch.setattr("delta_plc.doctor.subprocess.run", fake_run)
+
+    res, dev = _check_interface_sync("192.168.1.50; injection")
+    assert dev == "Ethernet0"
+    assert len(recorded_cmds) == 2
+
+    route_cmd = recorded_cmds[0]
+    assert "192.168.1.50; injection" not in route_cmd[3]
+    assert route_cmd[-1] == "192.168.1.50; injection"
+    assert "param($addr)" in route_cmd[3]
+
+    adapter_cmd = recorded_cmds[1]
+    assert "Ethernet0" not in adapter_cmd[3]
+    assert adapter_cmd[-1] == "Ethernet0"
+    assert "param($name)" in adapter_cmd[3]
+
+def test_interface_undeterminable_returns_skip(monkeypatch):
+    monkeypatch.setattr("delta_plc.doctor.platform.system", lambda: "Linux")
+
+    class RouteResult:
+        returncode = 0
+        stdout = "192.168.1.50 dev eth0 src 192.168.1.1\n"
+
+    monkeypatch.setattr("delta_plc.doctor.subprocess.run", lambda *a, **kw: RouteResult())
+    res, dev = _check_interface_sync("192.168.1.50")
+    assert dev == "eth0"
+    assert res.status == "SKIP"
+    assert "cannot determine link carrier for eth0" in res.detail
+
+def test_icmp_fallback_timeout_returns_warn(monkeypatch):
+    import subprocess
+    monkeypatch.setattr("delta_plc.doctor.platform.system", lambda: "Linux")
+
+    first_call = True
+
+    def fake_run(cmd, *args, **kwargs):
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            class InitialResult:
+                returncode = 2
+                stdout = ""
+            return InitialResult()
+        raise subprocess.TimeoutExpired(cmd, 5)
+
+    monkeypatch.setattr("delta_plc.doctor.subprocess.run", fake_run)
+    res = _check_icmp_sync("192.168.1.50")
+    assert res.status == "WARN"
+    assert "ping timed out" in res.detail or "0/3 replies" in res.detail
+

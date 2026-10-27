@@ -252,7 +252,8 @@ def _check_interface_sync(target: str | None) -> tuple[CheckResult, str | None]:
                 "powershell",
                 "-NoProfile",
                 "-Command",
-                f"Find-NetRoute -RemoteIPAddress '{target}' | Select-Object -ExpandProperty InterfaceAlias",
+                "& { param($addr) Find-NetRoute -RemoteIPAddress $addr | Select-Object -ExpandProperty InterfaceAlias }",
+                target,
             ]
             res = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=5)
             for line in res.stdout.splitlines():
@@ -291,14 +292,15 @@ def _check_interface_sync(target: str | None) -> tuple[CheckResult, str | None]:
             return CheckResult("interface", "PASS", f"Interface {dev} state is {operstate}"), dev
         except OSError:
             pass
-        return CheckResult("interface", "PASS", f"Interface {dev} routed"), dev
+        return CheckResult("interface", "SKIP", f"cannot determine link carrier for {dev}"), dev
     if system == "Windows":
         try:
             cmd = [
                 "powershell",
                 "-NoProfile",
                 "-Command",
-                f"Get-NetAdapter -Name '{dev}' | Select-Object -ExpandProperty Status",
+                "& { param($name) Get-NetAdapter -Name $name | Select-Object -ExpandProperty Status }",
+                dev,
             ]
             res = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=5)
             status_out = res.stdout.strip().lower()
@@ -314,7 +316,7 @@ def _check_interface_sync(target: str | None) -> tuple[CheckResult, str | None]:
                 )
         except (subprocess.SubprocessError, OSError):
             pass
-        return CheckResult("interface", "PASS", f"Interface {dev} routed"), dev
+        return CheckResult("interface", "SKIP", f"cannot determine link carrier for {dev}"), dev
 
     return CheckResult("interface", "SKIP", f"cannot determine carrier on {system}"), dev
 
@@ -428,6 +430,8 @@ def _check_icmp_sync(target: str | None) -> CheckResult:
         try:
             cmd = ["ping", "-c", "3", "-W", "1", target]
             res = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=5)
+        except subprocess.TimeoutExpired:
+            return CheckResult("icmp", "WARN", "ping timed out (0/3 replies)")
         except (subprocess.SubprocessError, OSError) as e:
             return CheckResult("icmp", "SKIP", f"ping error: {e}")
 
@@ -625,9 +629,6 @@ async def run_doctor(
 
         addr_res, _ = await asyncio.to_thread(_check_address_sync, None, None)
         checks.append(addr_res)
-
-        icmp_res = await asyncio.to_thread(_check_icmp_sync, None)
-        checks.append(icmp_res)
 
         arp_res = await asyncio.to_thread(_check_arp_sync)
         checks.append(arp_res)
