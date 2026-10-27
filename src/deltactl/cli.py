@@ -473,9 +473,7 @@ def _common_settings(
     return host, port, unit, timeout, series, strict_series
 
 
-def _resolve_int(
-    args: argparse.Namespace, attr: str, env: str, key: str, default: int
-) -> int:
+def _resolve_int(args: argparse.Namespace, attr: str, env: str, key: str, default: int) -> int:
     """Flag value, else env parsed as decimal, else config file, else default."""
     raw = resolve_setting(args, attr, env, key, default)
     try:
