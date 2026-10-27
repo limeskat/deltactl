@@ -158,6 +158,11 @@ class DeltaPLC:
         return self._client.detected_profile
 
     @property
+    def detected_d1001(self) -> int | None:
+        """Raw 16-bit register value read from D1001 during model detection, or None."""
+        return self._client.detected_d1001
+
+    @property
     def effective_profile(self) -> SeriesProfile:
         """Active profile governing valid addresses and chunk boundaries."""
         return self._client.effective_profile

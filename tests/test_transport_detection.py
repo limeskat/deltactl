@@ -5,6 +5,7 @@ import pytest
 from pymodbus.exceptions import ConnectionException
 
 from deltactl import DeltaPLC
+from deltactl.cli import main
 from deltactl.errors import (
     AddressRangeError,
     ModelDetectionError,
@@ -12,6 +13,7 @@ from deltactl.errors import (
     UnknownModelCodeError,
 )
 from deltactl.mock import MockServer
+from deltactl.planning import make_tag, plan_reads
 from deltactl.profiles import (
     DEFAULT_PROFILE,
     PROFILE_SE_EH3_SV2,
@@ -367,3 +369,40 @@ async def test_strict_detection_failure_aborts():
     with pytest.raises(ModelDetectionError):
         await plc.connect()
     assert plc.is_connected is False
+
+
+async def test_read_planned_out_of_range_raises_and_sends_zero_frames(mock_ss2):
+    async with AsyncDeltaPLC("127.0.0.1", port=mock_ss2.address[1], series="SS2") as plc:
+        initial_requests = mock_ss2.stats.requests
+        group = plan_reads([make_tag("D8000")])[0]
+        with pytest.raises(AddressRangeError):
+            await plc.read_planned([group])
+        # Assert zero wire frames sent to mock
+        assert mock_ss2.stats.requests == initial_requests
+
+    # Also unconnected client raises AddressRangeError without sending any frames
+    plc_unconnected = AsyncDeltaPLC("127.0.0.1", port=mock_ss2.address[1], series="SS2")
+    with pytest.raises(AddressRangeError):
+        await plc_unconnected.read_planned([group])
+    assert mock_ss2.stats.requests == initial_requests
+    assert plc_unconnected.is_connected is False
+
+
+def test_watch_out_of_range_series_fails_exit_2(mock_ss2):
+    assert (
+        main(
+            [
+                "watch",
+                "D8000",
+                "--series",
+                "SS2",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(mock_ss2.address[1]),
+                "--count",
+                "1",
+            ]
+        )
+        == 2
+    )

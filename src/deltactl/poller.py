@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import IO, Any, Protocol
 
+from .addressing import SeriesProfile, validate_span
 from .errors import DeltaPLCError, PollerError
 from .planning import ReadGroup, Tag, make_tag, plan_reads
 from .transport import GroupResult, decode_group_values
@@ -238,6 +239,9 @@ class _PollClient(Protocol):
     @property
     def is_connected(self) -> bool: ...
 
+    @property
+    def effective_profile(self) -> SeriesProfile: ...
+
     async def connect(self) -> None: ...
 
     async def read_planned(self, groups: Sequence[ReadGroup]) -> list[GroupResult]: ...
@@ -279,9 +283,16 @@ class TagPoller:
         if not tags:
             raise PollerError("TagPoller requires at least one tag")
         self._client = client
-        self._tags: tuple[Tag, ...] = tuple(
-            item if isinstance(item, Tag) else make_tag(item) for item in tags
-        )
+        profile = getattr(client, "effective_profile", None)
+        resolved_tags: list[Tag] = []
+        for item in tags:
+            if isinstance(item, Tag):
+                if profile is not None:
+                    validate_span(item.address, item.width, write=False, profile=profile)
+                resolved_tags.append(item)
+            else:
+                resolved_tags.append(make_tag(item, profile=profile))
+        self._tags: tuple[Tag, ...] = tuple(resolved_tags)
         self._max_gap = max_gap
         # Planned once: a fixed tag set always maps to the same read groups.
         self._groups: list[ReadGroup] = plan_reads(self._tags, max_gap=max_gap)

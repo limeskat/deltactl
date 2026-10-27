@@ -13,13 +13,14 @@ def result(group, value, error=None):
 
 
 class FakeClient:
-    def __init__(self, values=(1, 2), fail_fc=()):
+    def __init__(self, values=(1, 2), fail_fc=(), profile=None):
         self.values = list(values)
         self.fail_fc = set(fail_fc)
         self.calls = 0
         self.connected = True
         self.connect_times = []
         self.now = 0.0
+        self.effective_profile = profile
 
     @property
     def is_connected(self):
@@ -158,3 +159,12 @@ async def test_run_duration_does_not_sleep_after_duration_reached():
     emitted = await poller.run(duration=1.0)
     assert emitted == 1
     assert sleep_count == 0
+
+
+def test_poller_effective_profile_rejects_out_of_range():
+    from deltactl.errors import AddressRangeError
+    from deltactl.profiles import PROFILE_SS2
+
+    client = FakeClient(profile=PROFILE_SS2)
+    with pytest.raises(AddressRangeError):
+        TagPoller(client, ["D8000"])

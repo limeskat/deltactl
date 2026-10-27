@@ -149,3 +149,15 @@ def test_strict_series_abort_on_mismatch(mock_se, capsys):
         )
         == 1
     )
+
+
+def test_write_dry_run_out_of_range_series(capsys):
+    assert main(["write", "D8000", "1234", "--series", "SS2", "--dry-run"]) == 2
+    err = capsys.readouterr().err
+    assert "outside the D range" in err
+
+
+def test_read_out_of_range_series_without_connecting(capsys):
+    assert main(["read", "D8000", "--series", "SS2"]) == 2
+    err = capsys.readouterr().err
+    assert "outside the D range" in err

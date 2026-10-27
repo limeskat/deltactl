@@ -24,7 +24,7 @@ from typing import Any
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ConnectionException, ModbusException, ModbusIOException
 
-from .addressing import Address, Device, validate_span
+from .addressing import Address, Device, parse_raw, validate_span
 from .errors import (
     DeltaConnectionError,
     DeltaModbusException,
@@ -240,6 +240,7 @@ class AsyncDeltaPLC:
             self._configured_profile = get_profile(series)
         self._strict_series = strict_series
         self._detected_profile: SeriesProfile | None = None
+        self._detected_d1001: int | None = None
         self._effective_profile: SeriesProfile = self._configured_profile or DEFAULT_PROFILE
         # The driver owns retry and reconnect policy, so pymodbus defaults are off.
         self._client = AsyncModbusTcpClient(
@@ -268,6 +269,11 @@ class AsyncDeltaPLC:
     def detected_profile(self) -> SeriesProfile | None:
         """Hardware profile detected from D1001, or None before connect / if probe failed."""
         return self._detected_profile
+
+    @property
+    def detected_d1001(self) -> int | None:
+        """Raw 16-bit register value read from D1001 during model detection, or None."""
+        return self._detected_d1001
 
     @property
     def effective_profile(self) -> SeriesProfile:
@@ -388,6 +394,7 @@ class AsyncDeltaPLC:
             return
 
         raw = registers[0]
+        self._detected_d1001 = raw
         try:
             detected, _fw = decode_d1001(raw)
         except UnknownModelCodeError:
@@ -515,13 +522,38 @@ class AsyncDeltaPLC:
             decoded.update(decode_group_values(result.group, result.registers, result.bits))
         return {name: decoded[name] for name in names}
 
+    def _validate_planned_groups(self, groups: Sequence[ReadGroup]) -> None:
+        """Validate that all groups and tags are within effective_profile bounds."""
+        prof = self.effective_profile
+        for group in groups:
+            for tag in group.tags:
+                validate_span(tag.address, tag.width, write=False, profile=prof)
+            raw_type: str | None = None
+            if group.function == 3:
+                raw_type = "d"
+            elif group.function == 2:
+                raw_type = "x"
+            elif group.function == 1:
+                raw_type = "y" if 1280 <= group.start <= 1535 else "m"
+            if raw_type is not None:
+                start_addr = parse_raw(group.start, raw_type=raw_type, profile=prof)
+                validate_span(
+                    start_addr,
+                    group.count,
+                    write=False,
+                    allow_block_crossing=True,
+                    profile=prof,
+                )
+
     async def read_planned(
         self, groups: Sequence[ReadGroup], *, retries: int | None = None
     ) -> list[GroupResult]:
         """Execute an existing read plan, one :class:`GroupResult` per group."""
+        self._validate_planned_groups(groups)
         attempts = self.read_retries if retries is None else retries
         async with self._lock:
             await self._ensure_connected_locked()
+            self._validate_planned_groups(groups)
             return await self._read_planned_locked(groups, attempts)
 
     # -- public writes -----------------------------------------------------

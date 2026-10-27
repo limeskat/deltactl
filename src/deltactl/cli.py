@@ -41,7 +41,7 @@ from .mock import MockServer
 from .packing import DType, encode_values, mask_u16
 from .planning import Tag, make_tag, plan_chunks
 from .poller import CsvWriter, FrameWriter, NdjsonWriter, TableWriter, TagPoller
-from .profiles import decode_d1001, get_profile
+from .profiles import SeriesProfile, get_profile
 from .transport import AsyncDeltaPLC
 
 __all__ = ["build_parser", "main"]
@@ -493,11 +493,16 @@ def _resolve_float(
         raise DeltaValueError(f"invalid {env}={raw!r}: expected a number") from None
 
 
-def _check_dtype_target(text: str, dtype: str | None, parser: argparse.ArgumentParser) -> None:
+def _check_dtype_target(
+    text: str,
+    dtype: str | None,
+    parser: argparse.ArgumentParser,
+    profile: SeriesProfile | None = None,
+) -> None:
     """Reject ``--dtype`` unless *text* is a plain (non-bit) D tag."""
     if dtype is None:
         return
-    parsed = parse_tag(text)
+    parsed = parse_tag(text, profile=profile)
     if parsed.address.device is not Device.D or parsed.address.bit is not None:
         parser.error(f"--dtype is only valid for D word tags, not {parsed.display}")
 
@@ -523,28 +528,35 @@ def _cmd_read(args: argparse.Namespace) -> int:
     if raw is not None and dtype is not None and raw_type not in (None, "d"):
         parser.error("--dtype is only valid with --raw-type d")
 
+    host, port, unit, timeout, series, strict_series = _common_settings(
+        args, parser, required=False
+    )
+    configured_profile = get_profile(series) if series != "auto" else None
+
     if raw is not None:
-        tag_texts = [parse_raw(raw, raw_type or "d").display]
+        tag_texts = [parse_raw(raw, raw_type or "d", profile=configured_profile).display]
     else:
         if not tags:
             parser.error("read requires at least one tag")
-        tag_texts = expand_tags(tags)
+        tag_texts = expand_tags(tags, profile=configured_profile)
         if count is not None and len(tag_texts) > 1:
             parser.error("--count requires exactly one tag or raw address")
 
     for text in tag_texts:
-        _check_dtype_target(text, dtype, parser)
+        _check_dtype_target(text, dtype, parser, profile=configured_profile)
     default_dtype = DType(dtype) if dtype is not None else None
-    resolved = [make_tag(text, default_dtype) for text in tag_texts]
+    resolved = [make_tag(text, default_dtype, profile=configured_profile) for text in tag_texts]
 
     single = len(resolved) == 1
     value_count = (count or 1) if single else 1
     for tag in resolved:
         if tag.dtype is DType.BIT and tag.address.device is Device.D and value_count > 1:
             raise DeltaValueError(f"{tag.name} is a D word bit; --count is not supported")
-        plan_chunks(tag.address, tag.width, value_count)
+        plan_chunks(tag.address, tag.width, value_count, profile=configured_profile)
 
-    host, port, unit, timeout, series, strict_series = _common_settings(args, parser)
+    if not host:
+        parser.error("--host is required (or set DELTA_PLC_HOST)")
+
     use_json = bool(getattr(args, "json", False))
 
     with DeltaPLC(
@@ -635,8 +647,13 @@ def _cmd_write(args: argparse.Namespace) -> int:
     if raw is not None and dtype is not None and raw_type not in (None, "d"):
         parser.error("--dtype is only valid with --raw-type d")
 
+    host, port, unit, timeout, series, strict_series = _common_settings(
+        args, parser, required=False
+    )
+    configured_profile = get_profile(series) if series != "auto" else None
+
     if raw is not None:
-        tag_text = parse_raw(raw, raw_type or "d").display
+        tag_text = parse_raw(raw, raw_type or "d", profile=configured_profile).display
         value_texts = items
     else:
         tag_text = items[0]
@@ -644,9 +661,9 @@ def _cmd_write(args: argparse.Namespace) -> int:
         if not value_texts:
             parser.error("write requires at least one value")
 
-    _check_dtype_target(tag_text, dtype, parser)
+    _check_dtype_target(tag_text, dtype, parser, profile=configured_profile)
     default_dtype = DType(dtype) if dtype is not None else None
-    tag = make_tag(tag_text, default_dtype)
+    tag = make_tag(tag_text, default_dtype, profile=configured_profile)
     explicit = dtype is not None or ":" in tag_text
     count = len(value_texts)
 
@@ -654,17 +671,25 @@ def _cmd_write(args: argparse.Namespace) -> int:
         raise DeltaValueError(f"{tag.name} is a D word bit: exactly one value is required")
 
     total = count * tag.width if tag.address.device is Device.D else count
-    validate_span(tag.address, total, write=True, allow_block_crossing=True)
+    validate_span(
+        tag.address,
+        total,
+        write=True,
+        allow_block_crossing=True,
+        profile=configured_profile,
+    )
 
     values = [_parse_value(text, tag) for text in value_texts]
     encoded, display = _encode_write_values(tag, values, explicit)
-    frames = _plan_frames(tag, encoded, count)
+    frames = _plan_frames(tag, encoded, count, profile=configured_profile)
 
     if dry_run:
         _emit_dry_run(frames, bool(getattr(args, "json", False)))
         return 0
 
-    host, port, unit, timeout, series, strict_series = _common_settings(args, parser)
+    if not host:
+        parser.error("--host is required (or set DELTA_PLC_HOST)")
+
     with DeltaPLC(
         host,
         port=port,
@@ -738,13 +763,18 @@ def _perform_write(
     plc.write(tag.name, payload)
 
 
-def _plan_frames(tag: Tag, encoded: Sequence[Any], count: int) -> list[dict[str, Any]]:
+def _plan_frames(
+    tag: Tag,
+    encoded: Sequence[Any],
+    count: int,
+    profile: SeriesProfile | None = None,
+) -> list[dict[str, Any]]:
     """Build the dry-run frame list for a pre-validated, pre-encoded write."""
     if tag.dtype is DType.BIT and tag.address.device is Device.D:
         # A word-bit write is a read-modify-write in the driver; show the write leg.
         return [_frame(6, tag.address.wire, 1, [int(bool(encoded[0]))])]
     frames: list[dict[str, Any]] = []
-    for chunk in plan_chunks(tag.address, tag.width, count):
+    for chunk in plan_chunks(tag.address, tag.width, count, profile=profile):
         if tag.dtype is DType.BIT:
             function = 5 if chunk.values == 1 else 15
             values = encoded[chunk.first : chunk.first + chunk.values]
@@ -856,12 +886,17 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     if args.heartbeat < 0:
         parser.error("--heartbeat must be non-negative")
 
+    host, port, unit, timeout, series, strict_series = _common_settings(
+        args, parser, required=False
+    )
+    configured_profile = get_profile(series) if series != "auto" else None
+
     dtype = getattr(args, "dtype", None)
-    tag_texts = expand_tags(args.tags)
+    tag_texts = expand_tags(args.tags, profile=configured_profile)
     for text in tag_texts:
-        _check_dtype_target(text, dtype, parser)
+        _check_dtype_target(text, dtype, parser, profile=configured_profile)
     default_dtype = DType(dtype) if dtype is not None else None
-    resolved = [make_tag(text, default_dtype) for text in tag_texts]
+    resolved = [make_tag(text, default_dtype, profile=configured_profile) for text in tag_texts]
 
     seen_names: set[str] = set()
     tags: list[Tag] = []
@@ -869,6 +904,9 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         if tag.name not in seen_names:
             seen_names.add(tag.name)
             tags.append(tag)
+
+    if not host:
+        parser.error("--host is required (or set DELTA_PLC_HOST)")
 
     names = [tag.name for tag in tags]
     writer: FrameWriter
@@ -882,7 +920,6 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     else:
         writer = TableWriter(sys.stdout, names)
 
-    host, port, unit, timeout, series, strict_series = _common_settings(args, parser)
     try:
         asyncio.run(
             _run_watch(
@@ -1047,12 +1084,12 @@ async def _run_series_detect(
 ) -> int:
     """Connect, probe D1001, and print / save detected model."""
     async with AsyncDeltaPLC(host, port=port, unit=unit, timeout=timeout, series="auto") as plc:
-        val = await plc.read("D1001")
-        if not isinstance(val, (int, float)):
-            raise DeltaValueError("invalid response for D1001")
-        raw = int(val)
-        detected, _fw = decode_d1001(raw)
-        print(f"Detected model {detected.name} (firmware 0x{raw:04X})")
+        detected = plc.detected_profile
+        if detected is None:
+            raise DeltaValueError("could not detect PLC model from D1001")
+        raw = plc.detected_d1001
+        fw_text = f" (firmware 0x{raw:04X})" if raw is not None else ""
+        print(f"Detected model {detected.name}{fw_text}")
         if getattr(args, "save", False):
             save_config({"series": detected.name})
             print(f"Saved series '{detected.name}' to config")
