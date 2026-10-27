@@ -1,7 +1,7 @@
 """Command-line interface for the Delta DVP PLC driver.
 
-Implements ``plc read`` and ``plc write``. The argument parser is assembled so
-later commands (``watch``, ``doctor``, ``mock``) can extend it through the same
+Implements ``plc read``, ``plc write``, and ``plc watch``. The argument parser is assembled so
+later commands (``doctor``, ``mock``) can extend it through the same
 :func:`_add_common` helper without duplicating the global options.
 
 Exit codes follow the CLI contract: ``0`` success, ``1`` operational failure,
@@ -12,7 +12,10 @@ is constructed, so a usage error never opens a socket.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
 import datetime
+import io
 import json
 import logging
 import os
@@ -29,10 +32,13 @@ from .errors import (
     BlockBoundaryError,
     DeltaPLCError,
     DeltaValueError,
+    PollerError,
     ReadOnlyAddressError,
 )
 from .packing import DType, encode_values, mask_u16
 from .planning import Tag, make_tag, plan_chunks
+from .poller import CsvWriter, FrameWriter, NdjsonWriter, TableWriter, TagPoller
+from .transport import AsyncDeltaPLC
 
 __all__ = ["build_parser", "main"]
 
@@ -59,6 +65,7 @@ _USAGE_ERRORS = (
     AddressRangeError,
     BlockBoundaryError,
     DeltaValueError,
+    PollerError,
 )
 
 
@@ -116,8 +123,61 @@ def _add_write_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS)
 
 
+def _add_watch_options(parser: argparse.ArgumentParser) -> None:
+    """Add the ``watch``-specific positionals and options."""
+    parser.add_argument("tags", nargs="+", metavar="TAG")
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=0.5,
+        metavar="SECONDS",
+    )
+    parser.add_argument(
+        "--on-change",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--deadband",
+        type=float,
+        default=0.0,
+        metavar="FLOAT",
+    )
+    parser.add_argument(
+        "--heartbeat",
+        type=float,
+        default=10.0,
+        metavar="SECONDS",
+    )
+    parser.add_argument(
+        "--format",
+        type=str.lower,
+        choices=("ndjson", "csv", "table"),
+        default=None,
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+    )
+    group.add_argument(
+        "--count",
+        type=int,
+        default=None,
+        metavar="N",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str.lower,
+        choices=_DTYPES,
+        default=argparse.SUPPRESS,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Build the ``plc`` parser containing the ``read`` and ``write`` commands."""
+    """Build the ``plc`` parser containing the ``read``, ``write``, and ``watch`` commands."""
     parser = argparse.ArgumentParser(
         prog="plc", description="Delta DVP PLC driver over Modbus TCP."
     )
@@ -137,6 +197,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_write_options(write)
     write.set_defaults(_parser=write)
 
+    watch = subparsers.add_parser(
+        "watch", help="poll tags on an interval and stream frames"
+    )
+    _add_common(watch)
+    _add_watch_options(watch)
+    watch.set_defaults(_parser=watch)
+
     return parser
 
 
@@ -153,6 +220,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "read":
             return _cmd_read(args)
+        if args.command == "watch":
+            return _cmd_watch(args)
         return _cmd_write(args)
     except _USAGE_ERRORS as exc:
         return _fail(exc, 2)
@@ -532,6 +601,107 @@ def _emit_write(name: str, values: Sequence[Any], use_json: bool) -> None:
     else:
         for index, value in enumerate(values):
             print(f"{name}[{index}] = {_format_value(value)}")
+
+
+# -- watch -----------------------------------------------------------------
+
+
+async def _watch(
+    plc: AsyncDeltaPLC,
+    tags: Sequence[Tag],
+    args: argparse.Namespace,
+    writer: FrameWriter,
+) -> int:
+    """Poll *tags* via :class:`TagPoller` until stopped or finished."""
+    poller = TagPoller(
+        plc,
+        tags,
+        interval=args.interval,
+        on_change=args.on_change,
+        deadband=args.deadband,
+        heartbeat=args.heartbeat,
+    )
+    return await poller.run(
+        duration=args.duration, count=args.count, writer=writer
+    )
+
+
+async def _run_watch(
+    host: str,
+    port: int,
+    unit: int,
+    timeout: float,
+    tags: Sequence[Tag],
+    args: argparse.Namespace,
+    writer: FrameWriter,
+) -> int:
+    """Run the watch loop inside an :class:`AsyncDeltaPLC` context."""
+    async with AsyncDeltaPLC(host, port=port, unit=unit, timeout=timeout) as plc:
+        return await _watch(plc, tags, args, writer)
+
+
+def _cmd_watch(args: argparse.Namespace) -> int:
+    """Implement ``plc watch``."""
+    parser: argparse.ArgumentParser = args._parser
+    use_json = bool(getattr(args, "json", False))
+    fmt = getattr(args, "format", None)
+    if fmt is not None and fmt != "ndjson" and use_json:
+        parser.error(f"--json cannot be combined with --format {fmt}")
+    if fmt is None:
+        fmt = "ndjson"
+
+    duration = getattr(args, "duration", None)
+    count = getattr(args, "count", None)
+    if count is not None and count < 1:
+        parser.error("--count must be at least 1")
+    if duration is not None and duration < 0:
+        parser.error("--duration must be non-negative")
+    if args.interval < 0.05:
+        parser.error(f"--interval must be at least 0.05, got {args.interval}")
+    if args.deadband < 0:
+        parser.error("--deadband must be non-negative")
+    if args.heartbeat < 0:
+        parser.error("--heartbeat must be non-negative")
+
+    dtype = getattr(args, "dtype", None)
+    tag_texts = expand_tags(args.tags)
+    for text in tag_texts:
+        _check_dtype_target(text, dtype, parser)
+    default_dtype = DType(dtype) if dtype is not None else None
+    resolved = [make_tag(text, default_dtype) for text in tag_texts]
+
+    seen_names: set[str] = set()
+    tags: list[Tag] = []
+    for tag in resolved:
+        if tag.name not in seen_names:
+            seen_names.add(tag.name)
+            tags.append(tag)
+
+    names = [tag.name for tag in tags]
+    writer: FrameWriter
+    if fmt == "ndjson":
+        writer = NdjsonWriter(sys.stdout)
+    elif fmt == "csv":
+        if hasattr(sys.stdout, "reconfigure"):
+            with contextlib.suppress(AttributeError, io.UnsupportedOperation):
+                sys.stdout.reconfigure(newline="")
+        writer = CsvWriter(sys.stdout, names)
+    else:
+        writer = TableWriter(sys.stdout, names)
+
+    host, port, unit, timeout = _common_settings(args, parser)
+    try:
+        asyncio.run(_run_watch(host, port, unit, timeout, tags, args, writer))
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        with contextlib.suppress(OSError, ValueError):
+            writer.flush()
+            writer.close()
+        if hasattr(sys.stdout, "reconfigure"):
+            with contextlib.suppress(AttributeError, io.UnsupportedOperation):
+                sys.stdout.reconfigure(newline=None)
 
 
 # -- shared output helpers -------------------------------------------------
