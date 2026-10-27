@@ -18,7 +18,6 @@ import datetime
 import io
 import json
 import logging
-import os
 import re
 import sys
 from collections.abc import Sequence
@@ -27,7 +26,7 @@ from typing import Any, Literal, overload
 from . import __version__
 from .addressing import Device, expand_tags, parse_raw, parse_tag, validate_span
 from .client import DeltaPLC
-from .config import clear_config, get_config_path, load_config, save_config
+from .config import clear_config, get_config_path, load_config, resolve_setting, save_config
 from .doctor import DoctorReport, run_doctor
 from .errors import (
     AddressRangeError,
@@ -42,7 +41,7 @@ from .mock import MockServer
 from .packing import DType, encode_values, mask_u16
 from .planning import Tag, make_tag, plan_chunks
 from .poller import CsvWriter, FrameWriter, NdjsonWriter, TableWriter, TagPoller
-from .profiles import get_profile
+from .profiles import decode_d1001, get_profile
 from .transport import AsyncDeltaPLC
 
 __all__ = ["build_parser", "main"]
@@ -90,6 +89,8 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--port", type=int, metavar="PORT", default=argparse.SUPPRESS)
     group.add_argument("--unit", type=int, metavar="ID", default=argparse.SUPPRESS)
     group.add_argument("--timeout", type=float, metavar="SECONDS", default=argparse.SUPPRESS)
+    group.add_argument("--series", metavar="SERIES", default=argparse.SUPPRESS)
+    group.add_argument("--strict-series", action="store_true", default=argparse.SUPPRESS)
     group.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     group.add_argument("-v", "--verbose", action="count", default=argparse.SUPPRESS)
     group.add_argument("-q", "--quiet", action="store_true", default=argparse.SUPPRESS)
@@ -337,6 +338,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config_options(config)
     config.set_defaults(_parser=config)
 
+    series_detect = subparsers.add_parser(
+        "series-detect", help="detect PLC hardware model and firmware"
+    )
+    _add_common(series_detect)
+    series_detect.add_argument(
+        "--save",
+        action="store_true",
+        default=False,
+        help="save detected series to config file",
+    )
+    series_detect.set_defaults(_parser=series_detect)
+
     return parser
 
 
@@ -371,6 +384,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.config_command == "clear":
                 return _cmd_config_clear(args)
             return 2
+        if args.command == "series-detect":
+            return _cmd_series_detect(args)
         return 2
     except _USAGE_ERRORS as exc:
         return _fail(exc, 2)
@@ -419,7 +434,7 @@ def _common_settings(
     parser: argparse.ArgumentParser,
     *,
     required: Literal[True] = True,
-) -> tuple[str, int, int, float]: ...
+) -> tuple[str, int, int, float, str, bool]: ...
 
 
 @overload
@@ -428,7 +443,7 @@ def _common_settings(
     parser: argparse.ArgumentParser,
     *,
     required: Literal[False],
-) -> tuple[str | None, int, int, float]: ...
+) -> tuple[str | None, int, int, float, str, bool]: ...
 
 
 def _common_settings(
@@ -436,43 +451,44 @@ def _common_settings(
     parser: argparse.ArgumentParser,
     *,
     required: bool = True,
-) -> tuple[str | None, int, int, float]:
-    """Resolve host/port/unit/timeout with flag > environment > default."""
-    host = getattr(args, "host", None)
-    if host is None:
-        host = os.environ.get("DELTA_PLC_HOST")
+) -> tuple[str | None, int, int, float, str, bool]:
+    """Resolve host/port/unit/timeout/series/strict_series with flag > env > config > default."""
+    host = resolve_setting(args, "host", "DELTA_PLC_HOST", "host", None)
     if not host:
         if required:
             parser.error("--host is required (or set DELTA_PLC_HOST)")
         host = None
-    port = _resolve_int(args, "port", "DELTA_PLC_PORT", 502)
-    unit = _resolve_int(args, "unit", "DELTA_PLC_UNIT", 1)
-    timeout = _resolve_float(args, "timeout", "DELTA_PLC_TIMEOUT", 2.0)
-    return host, port, unit, timeout
+    port = _resolve_int(args, "port", "DELTA_PLC_PORT", "port", 502)
+    unit = _resolve_int(args, "unit", "DELTA_PLC_UNIT", "unit", 1)
+    timeout = _resolve_float(args, "timeout", "DELTA_PLC_TIMEOUT", "timeout", 2.0)
+    series = resolve_setting(args, "series", "DELTA_PLC_SERIES", "series", "auto")
+    if not series:
+        series = "auto"
+    strict_series = bool(getattr(args, "strict_series", False))
+    if series != "auto":
+        try:
+            get_profile(series)
+        except (ValueError, DeltaValueError):
+            parser.error(f"unknown series '{series}'")
+    return host, port, unit, timeout, series, strict_series
 
 
-def _resolve_int(args: argparse.Namespace, attr: str, env: str, default: int) -> int:
-    """Flag value, else ``env`` parsed as decimal, else *default*."""
-    value = getattr(args, attr, None)
-    if value is not None:
-        return value
-    raw = os.environ.get(env)
-    if raw is None or raw == "":
-        return default
+def _resolve_int(
+    args: argparse.Namespace, attr: str, env: str, key: str, default: int
+) -> int:
+    """Flag value, else env parsed as decimal, else config file, else default."""
+    raw = resolve_setting(args, attr, env, key, default)
     try:
         return int(raw)
     except ValueError:
         raise DeltaValueError(f"invalid {env}={raw!r}: expected an integer") from None
 
 
-def _resolve_float(args: argparse.Namespace, attr: str, env: str, default: float) -> float:
-    """Flag value, else ``env`` parsed as a float, else *default*."""
-    value = getattr(args, attr, None)
-    if value is not None:
-        return value
-    raw = os.environ.get(env)
-    if raw is None or raw == "":
-        return default
+def _resolve_float(
+    args: argparse.Namespace, attr: str, env: str, key: str, default: float
+) -> float:
+    """Flag value, else env parsed as float, else config file, else default."""
+    raw = resolve_setting(args, attr, env, key, default)
     try:
         return float(raw)
     except ValueError:
@@ -530,10 +546,17 @@ def _cmd_read(args: argparse.Namespace) -> int:
             raise DeltaValueError(f"{tag.name} is a D word bit; --count is not supported")
         plan_chunks(tag.address, tag.width, value_count)
 
-    host, port, unit, timeout = _common_settings(args, parser)
+    host, port, unit, timeout, series, strict_series = _common_settings(args, parser)
     use_json = bool(getattr(args, "json", False))
 
-    with DeltaPLC(host, port=port, unit=unit, timeout=timeout) as plc:
+    with DeltaPLC(
+        host,
+        port=port,
+        unit=unit,
+        timeout=timeout,
+        series=series,
+        strict_series=strict_series,
+    ) as plc:
         if single:
             values = _read_one(plc, resolved[0], value_count)
             results = [(resolved[0].name, values)]
@@ -643,8 +666,15 @@ def _cmd_write(args: argparse.Namespace) -> int:
         _emit_dry_run(frames, bool(getattr(args, "json", False)))
         return 0
 
-    host, port, unit, timeout = _common_settings(args, parser)
-    with DeltaPLC(host, port=port, unit=unit, timeout=timeout) as plc:
+    host, port, unit, timeout, series, strict_series = _common_settings(args, parser)
+    with DeltaPLC(
+        host,
+        port=port,
+        unit=unit,
+        timeout=timeout,
+        series=series,
+        strict_series=strict_series,
+    ) as plc:
         _perform_write(plc, tag, values, explicit)
 
     _emit_write(tag.name, display, bool(getattr(args, "json", False)))
@@ -790,9 +820,18 @@ async def _run_watch(
     tags: Sequence[Tag],
     args: argparse.Namespace,
     writer: FrameWriter,
+    series: str = "auto",
+    strict_series: bool = False,
 ) -> int:
     """Run the watch loop inside an :class:`AsyncDeltaPLC` context."""
-    async with AsyncDeltaPLC(host, port=port, unit=unit, timeout=timeout) as plc:
+    async with AsyncDeltaPLC(
+        host,
+        port=port,
+        unit=unit,
+        timeout=timeout,
+        series=series,
+        strict_series=strict_series,
+    ) as plc:
         return await _watch(plc, tags, args, writer)
 
 
@@ -845,9 +884,21 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     else:
         writer = TableWriter(sys.stdout, names)
 
-    host, port, unit, timeout = _common_settings(args, parser)
+    host, port, unit, timeout, series, strict_series = _common_settings(args, parser)
     try:
-        asyncio.run(_run_watch(host, port, unit, timeout, tags, args, writer))
+        asyncio.run(
+            _run_watch(
+                host,
+                port,
+                unit,
+                timeout,
+                tags,
+                args,
+                writer,
+                series=series,
+                strict_series=strict_series,
+            )
+        )
         return 0
     except KeyboardInterrupt:
         return 130
@@ -866,7 +917,11 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Implement ``deltactl doctor``."""
     parser: argparse.ArgumentParser = args._parser
-    host, port, unit, timeout = _common_settings(args, parser, required=False)
+    if getattr(args, "strict_series", False):
+        parser.error("--strict-series cannot be used with doctor; use --strict instead")
+    host, port, unit, timeout, series, _strict_series = _common_settings(
+        args, parser, required=False
+    )
     strict = bool(getattr(args, "strict", False))
     scan = getattr(args, "scan", None)
     use_json = bool(getattr(args, "json", False))
@@ -879,6 +934,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             scan=scan,
             strict=strict,
             timeout=timeout,
+            series=series,
         )
     )
     if use_json:
@@ -979,6 +1035,40 @@ def _cmd_config_clear(args: argparse.Namespace) -> int:
     clear_config()
     print(f"Cleared configuration at {path}")
     return 0
+
+
+# -- series-detect ---------------------------------------------------------
+
+
+async def _run_series_detect(
+    host: str,
+    port: int,
+    unit: int,
+    timeout: float,
+    args: argparse.Namespace,
+) -> int:
+    """Connect, probe D1001, and print / save detected model."""
+    async with AsyncDeltaPLC(host, port=port, unit=unit, timeout=timeout, series="auto") as plc:
+        val = await plc.read("D1001")
+        if not isinstance(val, (int, float)):
+            raise DeltaValueError("invalid response for D1001")
+        raw = int(val)
+        detected, _fw = decode_d1001(raw)
+        print(f"Detected model {detected.name} (firmware 0x{raw:04X})")
+        if getattr(args, "save", False):
+            save_config({"series": detected.name})
+            print(f"Saved series '{detected.name}' to config")
+        return 0
+
+
+def _cmd_series_detect(args: argparse.Namespace) -> int:
+    """Implement ``deltactl series-detect``."""
+    parser: argparse.ArgumentParser = args._parser
+    host, port, unit, timeout, _series, _strict_series = _common_settings(args, parser)
+    try:
+        return asyncio.run(_run_series_detect(host, port, unit, timeout, args))
+    except (DeltaPLCError, OSError, asyncio.TimeoutError) as exc:
+        return _fail(exc, 1)
 
 
 # -- shared output helpers -------------------------------------------------

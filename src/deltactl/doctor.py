@@ -16,6 +16,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from deltactl.errors import UnknownModelCodeError
+from deltactl.profiles import decode_d1001, get_profile
 from deltactl.transport import AsyncDeltaPLC
 
 
@@ -555,7 +557,8 @@ async def _check_modbus_and_plc(
     port: int,
     unit: int,
     timeout: float,
-) -> tuple[CheckResult, CheckResult, dict[str, Any] | None]:
+    series: str = "auto",
+) -> tuple[CheckResult, CheckResult, CheckResult, dict[str, Any] | None]:
     """Perform Modbus diagnostic reads and interpret PLC state."""
     start = time.perf_counter()
     tags = [
@@ -574,9 +577,10 @@ async def _check_modbus_and_plc(
             data = await plc_client.read_many(tags)
         latency_ms = round((time.perf_counter() - start) * 1000.0, 2)
 
+        raw_d1001 = int(data["D1001"])
         plc: dict[str, Any] = {
             "run": bool(data["M1000"]),
-            "firmware": f"0x{int(data['D1001']):04X}",
+            "firmware": f"0x{raw_d1001:04X}",
             "capacity_steps": int(data["D1002"]),
             "wdt_ms": int(data["D1000"]),
             "scan_ms": {
@@ -604,11 +608,48 @@ async def _check_modbus_and_plc(
                 "PASS",
                 f"RUN mode, no faults, scan max {plc['scan_ms']['max']} ms / WDT {plc['wdt_ms']} ms",
             )
-        return modbus_res, plc_res, plc
+
+        try:
+            det_profile, _fw = decode_d1001(raw_d1001)
+            if series == "auto":
+                model_res = CheckResult(
+                    "model",
+                    "PASS",
+                    f"Detected model {det_profile.name} (firmware 0x{raw_d1001:04X})",
+                )
+            else:
+                conf_profile = get_profile(series)
+                if conf_profile == det_profile:
+                    model_res = CheckResult(
+                        "model",
+                        "PASS",
+                        f"Model matches configured {conf_profile.name} (firmware 0x{raw_d1001:04X})",
+                    )
+                else:
+                    model_res = CheckResult(
+                        "model",
+                        "WARN",
+                        f"Configured {conf_profile.name} differs from detected {det_profile.name} (firmware 0x{raw_d1001:04X})",
+                    )
+        except UnknownModelCodeError:
+            model_res = CheckResult(
+                "model",
+                "WARN",
+                f"Unrecognized model code (firmware 0x{raw_d1001:04X})",
+            )
+        except Exception as e:  # noqa: BLE001
+            model_res = CheckResult(
+                "model",
+                "WARN",
+                f"Model check failed: {e}",
+            )
+
+        return modbus_res, plc_res, model_res, plc
     except Exception as e:  # noqa: BLE001
         modbus_res = CheckResult("modbus", "FAIL", f"Modbus read error: {e}")
         plc_res = CheckResult("plc", "SKIP", "PLC check skipped due to Modbus failure")
-        return modbus_res, plc_res, None
+        model_res = CheckResult("model", "WARN", f"Model check failed due to Modbus failure: {e}")
+        return modbus_res, plc_res, model_res, None
 
 
 async def run_doctor(
@@ -619,6 +660,7 @@ async def run_doctor(
     scan: str | None = None,
     strict: bool = False,
     timeout: float = 2.0,
+    series: str = "auto",
 ) -> DoctorReport:
     """Run system network and PLC diagnostics."""
     ts = datetime.datetime.now().astimezone().isoformat(timespec="milliseconds")
@@ -676,9 +718,12 @@ async def run_doctor(
     checks.append(tcp_res)
 
     if tcp_res.status == "PASS":
-        modbus_res, plc_res, plc_dict = await _check_modbus_and_plc(host, port, unit, timeout)
+        modbus_res, plc_res, model_res, plc_dict = await _check_modbus_and_plc(
+            host, port, unit, timeout, series=series
+        )
         checks.append(modbus_res)
         checks.append(plc_res)
+        checks.append(model_res)
     else:
         checks.append(
             CheckResult(
@@ -692,6 +737,13 @@ async def run_doctor(
                 "plc",
                 "SKIP",
                 "PLC check skipped because TCP 502 connection failed",
+            )
+        )
+        checks.append(
+            CheckResult(
+                "model",
+                "SKIP",
+                "model check skipped because TCP 502 connection failed",
             )
         )
         if icmp_res.status == "PASS":
