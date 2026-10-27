@@ -12,6 +12,7 @@ Tested against physical **Delta DVP-12SE** hardware and designed for SCADA/HMI b
 - **Data Types & Delta CDAB Byte Order:** 16-bit (`u16`, `i16`) and 32-bit (`i32`, `u32`, `f32`) typed access using Delta's low-word-first (CDAB) register order.
 - **Strict Write Safety:** Read-only `X` inputs (`FC02`), full-span guards on critical registers (`D1000–D1002`, `D1010–D1012`, `D1067`, `M1000–M1003`, `M1067`), fail-fast writes, socket closure on write timeouts, and atomic client-side read-modify-write for bit-of-word updates.
 - **Hardware-Aware Planning:** Automatic coalescing and chunking conforming to Delta's 100-register / 256-bit PDU limits and split memory block boundaries (`D4095/D4096`, `M1535/M1536`).
+- **Multi-Series Hardware Profiles:** Full support for all 8 commercial Delta DVP series (ES/EX/SS, SA/SX/SC, EH2/SV, EH3/SV2, ES2/EX2, SS2, SA2/SX2, SE) mapped to 5 canonical hardware memory profiles. Automatic hardware model detection via `D1001`, strict mismatch safety gates (`--strict-series`), and persistent configuration.
 - **Telemetry Poller:** Multi-tag polling with coalescing, deadband filtering, report-by-exception (RBE), configurable heartbeat snapshots, and NDJSON/CSV streaming.
 - **Bench Diagnostic CLI (`deltactl`):** Register reads, writes, live watching, passive/active network link diagnostics (`deltactl doctor`), and an accurate local mock simulator (`deltactl mock`).
 
@@ -48,7 +49,9 @@ from deltactl import AsyncDeltaPLC
 
 
 async def main():
-    async with AsyncDeltaPLC("192.168.1.5", port=502, unit=1) as plc:
+    # series="auto" (default) queries D1001 to detect the PLC model automatically.
+    # An explicit series or alias can also be passed (e.g. series="SS2").
+    async with AsyncDeltaPLC("192.168.1.5", port=502, unit=1, series="auto") as plc:
         # Read watchdog setpoint (D1000) and CPU RUN state (M1000)
         wdt = await plc.read("D1000")
         running = await plc.read("M1000")
@@ -89,6 +92,15 @@ deltactl write D9000 42 --dry-run --host 192.168.1.5
 
 # Stream telemetry with deadband and change detection
 deltactl watch D1000 D1010 M1000 --on-change --deadband 0.5 --format ndjson --host 192.168.1.5
+
+# Detect hardware model over Modbus TCP
+deltactl series-detect --host 192.168.1.5
+
+# Save detected hardware profile to persistent config file
+deltactl series-detect --host 192.168.1.5 --save
+
+# Read with explicit profile or strict safety checking
+deltactl read D0 --series SS2 --strict-series --host 192.168.1.5
 ```
 
 ---
@@ -103,7 +115,145 @@ deltactl watch D1000 D1010 M1000 --on-change --deadband 0.5 --format ndjson --ho
 | **Y** (Discrete Outputs) | `Y0–Y377` (octal) | `0x0500 + oct2dec(n)` | 01 (Coil) | 05 (Single) / 15 (Multiple) | Physical outputs. **`Y0–Y377` is writable**. |
 | **Bit-of-word** | `D<n>.<bit>` (bit: 0..15) | Read `0x1000 + n` | 03 (Holding) | 06 (Single) | Read-modify-write on D register under transport lock. |
 
-*Note: String/ASCII registers are out of scope for v0.1.*
+*Note: String/ASCII registers are out of scope for v0.1. The table above reflects the full-range `SE_EH3_SV2` profile. Register ceilings, interior gaps (e.g. `D600–D999` on `ES_EX_SS`), and octal I/O limits vary by active hardware profile. See [Multi-Series Support & Hardware Profiles](#multi-series-support--hardware-profiles) below.*
+
+---
+
+## Multi-Series Support & Hardware Profiles
+
+Delta DVP PLCs encompass 8 commercial series documented in Delta manual `580.html` (*LYNN.CHEN, "Device Range"*): **ES/EX/SS**, **SA/SX/SC**, **EH2/SV**, **EH3/SV2**, **ES2/EX2**, **SS2**, **SA2/SX2**, and **SE**.
+
+Analyzing their physical addressing boundaries reveals that these 8 commercial series collapse into **exactly 5 distinct canonical hardware profiles**:
+
+```
+                          ┌─────────────────────────────┐
+                          │   5 CANONICAL PROFILES      │
+                          └──────────────┬──────────────┘
+                                         │
+     ┌───────────────┬───────────────────┼───────────────────┬───────────────┐
+     ▼               ▼                   ▼                   ▼               ▼
+┌───────────┐ ┌──────────────┐    ┌─────────────┐     ┌─────────────┐ ┌─────────────┐
+│12k Profile│ │ 10k Profile  │    │ 5k Profile  │     │ 5k Profile  │ │Small Profile│
+│ SE_EH3_SV2│ │   ES2_EX2    │    │     SS2     │     │  SA_SX_SC   │ │  ES_EX_SS   │
+└───────────┘ └──────────────┘    └─────────────┘     └─────────────┘ └─────────────┘
+  SE, EH3,      ES2, EX2, SA2,          SS2,              SA, SX,         ES, EX,
+  SV2 models    SX2, EH2, SV        14SS2 models        SC models        SS models
+```
+
+### 1. Canonical Profile Specifications
+
+| Canonical Profile Name | Architecture | Data Registers (D) | Internal Relays (M) | Discrete I/O (X / Y) | D/M Split Boundaries |
+|---|---|---|---|---|---|
+| `SE_EH3_SV2` | 12k Architecture | `D0–D11999` (12,000 words) | `M0–M4095` (4,096 bits) | `X0–X377`<br>`Y0–Y377` (256 octal points) | `D4095/D4096`<br>`M1535/M1536` |
+| `ES2_EX2` | 10k Architecture | `D0–D9999` (10,000 words) | `M0–M4095` (4,096 bits) | `X0–X377`<br>`Y0–Y377` (256 octal points) | `D4095/D4096`<br>`M1535/M1536` |
+| `SS2` | 5k Architecture | `D0–D4999` (5,000 words) | `M0–M4095` (4,096 bits) | `X0–X377`<br>`Y0–Y377` (256 octal points) | `D4095/D4096`<br>`M1535/M1536` |
+| `SA_SX_SC` | 5k Architecture | `D0–D4999` (5,000 words) | `M0–M4095` (4,096 bits) | `X0–X177`<br>`Y0–Y177` (128 octal points) | `D4095/D4096`<br>`M1535/M1536` |
+| `ES_EX_SS` | Small / Legacy Architecture | `D0–D599` & `D1000–D1311`<br>*(Interior gap `D600–D999` unmapped)* | `M0–M1279` (1,280 bits) | `X0–X177`<br>`Y0–Y177` (128 octal points) | *None* (single block) |
+
+#### Key Architectural Details:
+- **Discontinuous Memory on `ES_EX_SS`:** First-generation micro units (`ES`, `EX`, `SS`) contain an unmapped interior hardware gap from `D600` to `D999`. Accessing any register in `D600–D999` or beyond `D1311` raises `AddressRangeError` client-side before any packet is sent. Multi-register spans that touch this gap are likewise blocked before I/O.
+- **I/O Capacity:** `SA_SX_SC` and `ES_EX_SS` support up to `X177`/`Y177` (128 points, octal indices 0..177, decimal 0..127). The other profiles support up to `X377`/`Y377` (256 points, octal indices 0..377, decimal 0..255).
+- **Split Memory Boundaries:** For profiles with large memory spaces, addresses above `D4095` switch to wire base `0x9000` (`D4096` = `0x9000`), and addresses above `M1535` switch to wire base `0xB000` (`M1536` = `0xB000`). The request planner automatically chunks queries to avoid crossing these physical boundaries. In `ES_EX_SS`, all valid registers reside in wire block 0, so no D/M split boundary exists.
+
+### 2. Commercial Model Alias Mapping
+
+You can supply either a canonical profile name or any commercial model alias to `--series`, `deltactl config set-series`, or the Python client `series` parameter:
+
+| Canonical Profile | Covered MPU Models and Aliases |
+|---|---|
+| `SE_EH3_SV2` | `SE`, `12SE`, `28SE`, `DVP_12SE`, `DVP_28SE`, `EH3`, `DVP_EH3`, `SV2`, `28SV2`, `DVP_28SV2`, `DVP_SE` |
+| `ES2_EX2` | `ES2`, `EX2`, `DVP_ES2`, `DVP_EX2`, `SA2`, `12SA2`, `DVP_12SA2`, `SX2`, `20SX2`, `DVP_20SX2`, `EH2`, `DVP_EH2`, `SV`, `28SV`, `DVP_28SV` |
+| `SS2` | `SS2`, `14SS2`, `DVP_SS2`, `DVP_14SS2` |
+| `SA_SX_SC` | `SA`, `DVP_SA`, `SX`, `DVP_SX`, `SC`, `DVP_SC` |
+| `ES_EX_SS` | `ES`, `DVP_ES`, `EX`, `DVP_EX`, `SS`, `DVP_SS` |
+
+**Alias Normalization Rules:**
+- Strips surrounding whitespace, capitalizes, and replaces hyphens with underscores (`dvp-14ss2` $\to$ `DVP_14SS2`).
+- Strips leading `DVP_` or `DVP` prefixes (`DVP_28SV2` $\to$ `28SV2`).
+- Strict generation hygiene: `SS` $\to$ `ES_EX_SS`, while `SS2` $\to$ `SS2`; `ES` $\to$ `ES_EX_SS`, while `ES2` $\to$ `ES2_EX2`.
+- Any unmapped series name raises `DeltaValueError` (or causes CLI commands to exit with code 2).
+
+### 3. Automatic Hardware Detection via `D1001`
+
+Delta DVP PLCs store model identification and firmware revision in special data register `D1001` (`0x13E9`):
+- **Upper Byte `(val >> 8) & 0xFF`:** Model identifier code.
+- **Lower Byte `val & 0xFF`:** Firmware revision (e.g. `0x21` = v2.1).
+
+| Upper Byte | Model Description | Canonical Profile | Provenance |
+|---|---|---|---|
+| `0x7C` | DVP-12SE / DVP-28SE | `SE_EH3_SV2` | Bench Hardware-Verified (returns `0x7C21`) |
+| `0x70` | DVP-ES2 / DVP-EX2 | `ES2_EX2` | Delta Application Manual |
+| `0x72` | DVP-14SS2 | `SS2` | Delta Application Manual |
+| `0x74` | DVP-12SA2 | `ES2_EX2` | Delta Application Manual |
+| `0x76` | DVP-20SX2 | `ES2_EX2` | Delta Application Manual |
+| `0x62` | DVP-EH3 | `SE_EH3_SV2` | Delta Application Manual |
+| `0x66` | DVP-28SV2 | `SE_EH3_SV2` | Delta Application Manual |
+| `0x60` | DVP-EH2 | `ES2_EX2` | Delta Application Manual |
+| `0x64` | DVP-28SV | `ES2_EX2` | Delta Application Manual |
+| `0x50` | DVP-ES | `ES_EX_SS` | Delta Application Manual |
+| `0x52` | DVP-SS | `ES_EX_SS` | Delta Application Manual |
+| `0x54` | DVP-SA | `SA_SX_SC` | Delta Application Manual |
+| `0x58` | DVP-SX | `SA_SX_SC` | Delta Application Manual |
+| `0x5A` | DVP-SC | `SA_SX_SC` | Delta Application Manual |
+
+**Serialized Detection (Zero Race Conditions):**
+When `series="auto"` (the default), `deltactl` queries register `D1001` under an internal mutex lock during connection before dispatching any user read or write requests. The detected profile is cached on the client (`client.detected_profile`).
+
+### 4. Safety Gate: Strict Series Checking (`--strict-series`)
+
+To protect field PLCs from unintended commands or improper addressing:
+
+- **Strict Mode (`--strict-series` / `strict_series=True`):**
+  - If a configured series does not match the connected hardware profile, connection is aborted immediately and raises `ModelMismatchError`.
+  - **Zero user payload frames are sent** (only the single `0x13E9` probe frame was transmitted to hardware).
+  - If network communication fails during detection, it raises `ModelDetectionError`.
+  - If `D1001` returns an unrecognized model code, it raises `UnknownModelCodeError`.
+- **Non-Strict Mode (Default):**
+  - If a mismatch occurs, `deltactl` logs a warning and clamps address validation to the **mathematical intersection** of the configured and detected profiles:
+    - $\text{Valid D} = \text{configured.d\_ranges} \cap \text{detected.d\_ranges}$
+    - $\text{Valid M} = \text{configured.m\_ranges} \cap \text{detected.m\_ranges}$
+    - $\text{Max X} = \min(\text{configured.x\_max}, \text{detected.x\_max})$
+    - $\text{Max Y} = \min(\text{configured.y\_max}, \text{detected.y\_max})$
+    - $\text{Guards} = \text{configured.guards} \cup \text{detected.guards}$
+  - Under no circumstance are out-of-bounds Modbus frames transmitted to the PLC.
+
+### 5. Resolution Precedence Hierarchy
+
+`deltactl` resolves the active series following this strict precedence order:
+1. **CLI Flag:** `--series <NAME>` (e.g. `deltactl read D0 --series SS2`)
+2. **Environment Variable:** `DELTA_PLC_SERIES`
+3. **Persistent Config File:** `series` in `config.json`
+4. **Auto-Detection / Fallback:** Probed dynamically from `D1001` on connect (fallback `SE_EH3_SV2` if offline / dry-run).
+
+### 6. Persistent Configuration (`deltactl config` & `deltactl series-detect`)
+
+You can persist connection and profile preferences to disk, avoiding repetitive CLI flags.
+
+**Config File Location:**
+- **Linux / macOS:** `$XDG_CONFIG_HOME/deltactl/config.json` (fallback `~/.config/deltactl/config.json`)
+- **Windows:** `%APPDATA%\deltactl\config.json`
+
+**CLI Commands:**
+
+```bash
+# 1. Detect PLC hardware model over the network
+deltactl series-detect --host 192.168.1.5
+
+# 2. Detect and persist the detected series directly to config.json
+deltactl series-detect --host 192.168.1.5 --save
+
+# 3. Explicitly set the series profile in persistent configuration
+deltactl config set-series SS2
+
+# 4. View the currently configured series
+deltactl config get-series
+
+# 5. Display all saved settings and the config file path
+deltactl config show
+
+# 6. Clear/delete the persistent configuration file
+deltactl config clear
+```
 
 ---
 
@@ -254,16 +404,21 @@ HIL write tests will **never** touch inputs, outputs (`Y`), or system control re
 | `DELTA_PLC_PORT` | Modbus TCP port | `502` |
 | `DELTA_PLC_UNIT` | Modbus Unit ID / Slave ID | `1` |
 | `DELTA_PLC_TIMEOUT` | Network socket timeout in seconds | `2.0` |
+| `DELTA_PLC_SERIES` | Target PLC hardware profile name or alias | `auto` |
 | `DELTA_PLC_HIL_HOST` | Host address for HIL test execution | *(Unset: HIL tests skipped)* |
 | `DELTA_PLC_HIL_UNIT` | Unit ID for HIL test execution | `1` |
 | `DELTA_PLC_HIL_WRITES` | Set to `1` to enable scratch writes in HIL tests | `0` (disabled) |
 
-CLI flags (e.g. `--host`, `--port`) always take precedence over environment variables.
+CLI flags (e.g. `--host`, `--port`, `--series`) always take precedence over environment variables.
 
 ---
 
 ## Troubleshooting
 
+- **`ModelMismatchError: configured series '...' does not match detected hardware '...'`:**
+  - Occurs when running in strict mode (`--strict-series` / `strict_series=True`) and the connected hardware returns a different model identifier in `D1001`. Update your series configuration (`deltactl config set-series <detected>`), specify `--series <detected>`, or omit `--strict-series` to allow safe mathematical intersection clamping.
+- **`AddressRangeError: D... is outside valid range`:**
+  - The requested register does not exist on the active hardware profile (for example, interior gap `D600–D999` or `D1312+` on `ES_EX_SS`, or `D5000+` on `SS2`). Check the target profile's valid ranges or run `deltactl series-detect` to inspect the connected PLC.
 - **`Connection refused` / `Cannot connect to host:502`:**
   - Verify physical cabling and link LED.
   - Check whether another client or WPLSoft session has occupied all 2–4 socket slots.
