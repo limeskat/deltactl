@@ -14,6 +14,7 @@ __all__ = [
     "NotConnectedError",
     "PollerError",
     "ReadOnlyAddressError",
+    "UnknownModelCodeError",
 ]
 
 
@@ -59,6 +60,10 @@ class DeltaTimeoutError(DeltaPLCError):
 
 class DeltaProtocolError(DeltaPLCError):
     """The PLC returned a malformed, truncated, or unexpected response."""
+
+
+class UnknownModelCodeError(DeltaProtocolError):
+    """Raised when D1001 returns an upper byte not in the Delta model registry."""
 
 
 class DeltaModbusException(DeltaProtocolError):
