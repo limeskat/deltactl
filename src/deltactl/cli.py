@@ -1,6 +1,6 @@
 """Command-line interface for the Delta DVP PLC driver.
 
-Implements ``deltactl read``, ``deltactl write``, ``deltactl watch``, ``deltactl doctor``, and ``deltactl mock``.
+Implements ``deltactl read``, ``deltactl write``, ``deltactl watch``, ``deltactl doctor``, ``deltactl mock``, and ``deltactl config``.
 The argument parser is assembled so every command extends through the same
 :func:`_add_common` helper without duplicating the global options.
 
@@ -27,6 +27,7 @@ from typing import Any, Literal, overload
 from . import __version__
 from .addressing import Device, expand_tags, parse_raw, parse_tag, validate_span
 from .client import DeltaPLC
+from .config import clear_config, get_config_path, load_config, save_config
 from .doctor import DoctorReport, run_doctor
 from .errors import (
     AddressRangeError,
@@ -41,6 +42,7 @@ from .mock import MockServer
 from .packing import DType, encode_values, mask_u16
 from .planning import Tag, make_tag, plan_chunks
 from .poller import CsvWriter, FrameWriter, NdjsonWriter, TableWriter, TagPoller
+from .profiles import get_profile
 from .transport import AsyncDeltaPLC
 
 __all__ = ["build_parser", "main"]
@@ -267,6 +269,30 @@ def _add_mock_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_config_options(parser: argparse.ArgumentParser) -> None:
+    """Add the ``config``-specific subparsers."""
+    cfg_subparsers = parser.add_subparsers(
+        dest="config_command", metavar="CONFIG_COMMAND", required=True
+    )
+
+    set_series = cfg_subparsers.add_parser("set-series", help="set default PLC series")
+    _add_common(set_series)
+    set_series.add_argument("series", metavar="SERIES", help="PLC series or model alias")
+    set_series.set_defaults(_parser=set_series)
+
+    get_series = cfg_subparsers.add_parser("get-series", help="get default PLC series")
+    _add_common(get_series)
+    get_series.set_defaults(_parser=get_series)
+
+    show = cfg_subparsers.add_parser("show", help="show configuration")
+    _add_common(show)
+    show.set_defaults(_parser=show)
+
+    clear = cfg_subparsers.add_parser("clear", help="clear configuration")
+    _add_common(clear)
+    clear.set_defaults(_parser=clear)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the ``deltactl`` parser containing all commands."""
     parser = argparse.ArgumentParser(
@@ -306,6 +332,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mock_options(mock)
     mock.set_defaults(_parser=mock)
 
+    config = subparsers.add_parser("config", help="manage persistent configuration")
+    _add_common(config)
+    _add_config_options(config)
+    config.set_defaults(_parser=config)
+
     return parser
 
 
@@ -330,6 +361,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_doctor(args)
         if args.command == "mock":
             return _cmd_mock(args)
+        if args.command == "config":
+            if args.config_command == "set-series":
+                return _cmd_config_set_series(args)
+            if args.config_command == "get-series":
+                return _cmd_config_get_series(args)
+            if args.config_command == "show":
+                return _cmd_config_show(args)
+            if args.config_command == "clear":
+                return _cmd_config_clear(args)
+            return 2
         return 2
     except _USAGE_ERRORS as exc:
         return _fail(exc, 2)
@@ -894,6 +935,50 @@ def _cmd_mock(args: argparse.Namespace) -> int:
         return 0
     finally:
         server.stop()
+
+
+# -- config ----------------------------------------------------------------
+
+
+def _cmd_config_set_series(args: argparse.Namespace) -> int:
+    """Implement ``deltactl config set-series <series>``."""
+    parser: argparse.ArgumentParser = args._parser
+    try:
+        profile = get_profile(args.series)
+    except ValueError as exc:
+        parser.error(str(exc))
+    save_config({"series": profile.name})
+    path = get_config_path()
+    print(f"Saved default series '{profile.name}' to {path}")
+    return 0
+
+
+def _cmd_config_get_series(args: argparse.Namespace) -> int:
+    """Implement ``deltactl config get-series``."""
+    data = load_config()
+    series = data.get("series")
+    if series:
+        print(series)
+        return 0
+    print("No series configured")
+    return 1
+
+
+def _cmd_config_show(args: argparse.Namespace) -> int:
+    """Implement ``deltactl config show``."""
+    path = get_config_path()
+    data = load_config()
+    print(f"Configuration file: {path}")
+    print(json.dumps(data, indent=2))
+    return 0
+
+
+def _cmd_config_clear(args: argparse.Namespace) -> int:
+    """Implement ``deltactl config clear``."""
+    path = get_config_path()
+    clear_config()
+    print(f"Cleared configuration at {path}")
+    return 0
 
 
 # -- shared output helpers -------------------------------------------------
