@@ -105,7 +105,7 @@ class DeltaPLC:
         max_write_registers: int = 100,
         max_write_bits: int = 256,
         auto_connect: bool = False,
-        series: str = "auto",
+        series: str | SeriesProfile = "auto",
         strict_series: bool = False,
         sync_call_timeout: float = 120.0,
     ) -> None:
@@ -136,6 +136,16 @@ class DeltaPLC:
         atexit.register(self.close)
 
     # -- lifecycle ---------------------------------------------------------
+
+    @property
+    def series(self) -> str | SeriesProfile:
+        """Configured series parameter ('auto' or profile name/object)."""
+        return self._client.series
+
+    @property
+    def strict_series(self) -> bool:
+        """Whether strict series checking is enabled."""
+        return self._client.strict_series
 
     @property
     def configured_profile(self) -> SeriesProfile | None:

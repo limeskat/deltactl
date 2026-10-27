@@ -87,6 +87,13 @@ _RETRY_DELAYS: tuple[float, ...] = (0.2, 0.5, 1.0)
 #: Errors worth another attempt: the PLC may simply not have answered in time.
 _RETRYABLE = (DeltaConnectionError, DeltaTimeoutError)
 
+#: Fatal detection errors during reconnect; must abort immediately without retrying.
+_FATAL_DETECTION_ERRORS = (
+    ModelMismatchError,
+    UnknownModelCodeError,
+    ModelDetectionError,
+)
+
 
 @dataclass
 class GroupResult:
@@ -209,7 +216,7 @@ class AsyncDeltaPLC:
         max_write_registers: int = 100,
         max_write_bits: int = 256,
         auto_connect: bool = False,
-        series: str = "auto",
+        series: str | SeriesProfile = "auto",
         strict_series: bool = False,
     ) -> None:
         self.host = host
@@ -224,6 +231,7 @@ class AsyncDeltaPLC:
         self.max_write_registers = max_write_registers
         self.max_write_bits = max_write_bits
         self.auto_connect = auto_connect
+        self._series = series
         if isinstance(series, SeriesProfile):
             self._configured_profile: SeriesProfile | None = series
         elif series == "auto":
@@ -240,6 +248,16 @@ class AsyncDeltaPLC:
         self._lock = asyncio.Lock()
 
     # -- lifecycle ---------------------------------------------------------
+
+    @property
+    def series(self) -> str | SeriesProfile:
+        """Configured series parameter ('auto' or profile name/object)."""
+        return self._series
+
+    @property
+    def strict_series(self) -> bool:
+        """Whether strict series checking is enabled."""
+        return self._strict_series
 
     @property
     def configured_profile(self) -> SeriesProfile | None:
@@ -283,19 +301,23 @@ class AsyncDeltaPLC:
     async def _connect_locked(self) -> None:
         """Connect without the lock; the caller must already hold it."""
         try:
-            connected = await asyncio.wait_for(self._client.connect(), self.connect_timeout)
-        except (asyncio.TimeoutError, OSError, ConnectionException, ModbusException) as exc:
-            if self._strict_series:
-                raise ModelDetectionError(f"failed to probe model ID: {exc}") from exc
-            raise DeltaConnectionError(
-                f"could not connect to {self.host}:{self.port}: {exc}"
-            ) from exc
-        if not connected:
-            if self._strict_series:
-                raise ModelDetectionError(f"failed to connect to {self.host}:{self.port}")
-            raise DeltaConnectionError(f"could not connect to {self.host}:{self.port}")
+            try:
+                connected = await asyncio.wait_for(self._client.connect(), self.connect_timeout)
+            except (asyncio.TimeoutError, OSError, ConnectionException, ModbusException) as exc:
+                if self._strict_series:
+                    raise ModelDetectionError(f"failed to probe model ID: {exc}") from exc
+                raise DeltaConnectionError(
+                    f"could not connect to {self.host}:{self.port}: {exc}"
+                ) from exc
+            if not connected:
+                if self._strict_series:
+                    raise ModelDetectionError(f"failed to connect to {self.host}:{self.port}")
+                raise DeltaConnectionError(f"could not connect to {self.host}:{self.port}")
 
-        await self._detect_model_locked()
+            await self._detect_model_locked()
+        except Exception:
+            self._client.close()
+            raise
 
     async def _detect_model_locked(self) -> None:
         """Probe D1001 (0x13E9) to detect PLC hardware model under lock."""
@@ -407,6 +429,13 @@ class AsyncDeltaPLC:
                     )
                     self._effective_profile = intersect_profiles(self._configured_profile, detected)
 
+    async def _ensure_connected(self) -> None:
+        """Require a connection, or make one under lock when ``auto_connect`` is set."""
+        if self.is_connected:
+            return
+        async with self._lock:
+            await self._ensure_connected_locked()
+
     async def _ensure_connected_locked(self) -> None:
         """Require a connection, or make one when ``auto_connect`` is set."""
         if self.is_connected:
@@ -447,6 +476,7 @@ class AsyncDeltaPLC:
 
     async def read_bits(self, tag: str, count: int = 1) -> bool | list[bool]:
         """Read *count* M/X/Y wire bits (scalar when ``count == 1``)."""
+        await self._ensure_connected()
         parsed = make_tag(tag, DType.BIT, profile=self.effective_profile)
         if parsed.address.device is Device.D:
             raise DeltaValueError(
@@ -463,6 +493,7 @@ class AsyncDeltaPLC:
         normalized keys are rejected before any I/O; the first group error is
         raised after the plan runs.
         """
+        await self._ensure_connected()
         parsed = make_tags(tags, profile=self.effective_profile)
         names = [tag.name for tag in parsed]
         seen: set[str] = set()
@@ -526,6 +557,7 @@ class AsyncDeltaPLC:
 
     async def write_bits(self, tag: str, value: Any) -> None:
         """Write one or more M/X/Y wire bits; D tags raise ``DeltaValueError``."""
+        await self._ensure_connected()
         parsed = make_tag(tag, DType.BIT, profile=self.effective_profile)
         if parsed.address.device is Device.D:
             raise DeltaValueError(
@@ -543,6 +575,7 @@ class AsyncDeltaPLC:
         inline ``:i16``/``:i32``/``:u32``/``:f32`` tag encodes through
         ``packing`` like the typed writes.
         """
+        await self._ensure_connected()
         parsed = make_tag(tag, profile=self.effective_profile)
         values: list[Any]
         if parsed.dtype is DType.BIT:
@@ -558,6 +591,7 @@ class AsyncDeltaPLC:
 
     async def _write_typed(self, tag: str, dtype: DType, value: Any) -> None:
         """Shared body of the typed writes; encodes through ``packing``."""
+        await self._ensure_connected()
         parsed = make_tag(tag, dtype, profile=self.effective_profile)
         await self._guard_and_write(parsed, _encode_write(value, parsed.dtype))
 
@@ -567,6 +601,7 @@ class AsyncDeltaPLC:
         The span check runs before the lock is taken, so every guard failure
         (range, boundary, read-only) happens without sending any PDU.
         """
+        await self._ensure_connected()
         if not values:
             raise DeltaValueError("write requires at least one value")
         bit_like = tag.dtype is DType.BIT
@@ -664,6 +699,8 @@ class AsyncDeltaPLC:
                 if not self.is_connected:
                     try:
                         await self._connect_locked()
+                    except _FATAL_DETECTION_ERRORS:
+                        raise
                     except DeltaPLCError:
                         pass
                 await asyncio.sleep(_RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)])
@@ -708,6 +745,7 @@ class AsyncDeltaPLC:
 
     async def _read_typed(self, tag: str, dtype: DType | None, count: int) -> Any:
         """Shared body of ``read`` and the typed reads; validates before I/O."""
+        await self._ensure_connected()
         parsed = make_tag(tag, dtype, profile=self.effective_profile)
         if parsed.dtype is DType.BIT:
             if count != 1:
@@ -732,6 +770,7 @@ class AsyncDeltaPLC:
 
     async def _read_numeric(self, tag: Tag, count: int) -> list[int | float]:
         """Locked read of *count* numeric values, chunked across PDUs."""
+        await self._ensure_connected()
         chunks = plan_chunks(
             tag.address,
             tag.width,
@@ -752,6 +791,7 @@ class AsyncDeltaPLC:
 
     async def _read_wire_bits(self, tag: Tag, count: int) -> list[bool]:
         """Locked read of *count* M/X/Y wire bits, chunked across PDUs."""
+        await self._ensure_connected()
         chunks = plan_chunks(
             tag.address,
             1,
@@ -820,6 +860,8 @@ class AsyncDeltaPLC:
                     # simply reported by that attempt.
                     try:
                         await self._connect_locked()
+                    except _FATAL_DETECTION_ERRORS:
+                        raise
                     except DeltaPLCError:
                         pass
                 await asyncio.sleep(_RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)])
