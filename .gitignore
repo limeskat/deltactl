@@ -14,6 +14,7 @@ dist/
 htmlcov/
 coverage.xml
 .venv/
+.venv
 .superpowers/
 docs/superpowers/
 .idea/
