@@ -183,13 +183,9 @@ def _check_index(device: Device, index: int, profile: SeriesProfile | None = Non
                 f"{device.value}{index} is outside the {device.value} range ({ranges_str})"
             )
     elif device is Device.X and not 0 <= index <= prof.x_max_octal:
-        raise AddressRangeError(
-            f"X{index:o} is outside the X range (max X{prof.x_max_octal:o})"
-        )
+        raise AddressRangeError(f"X{index:o} is outside the X range (max X{prof.x_max_octal:o})")
     elif device is Device.Y and not 0 <= index <= prof.y_max_octal:
-        raise AddressRangeError(
-            f"Y{index:o} is outside the Y range (max Y{prof.y_max_octal:o})"
-        )
+        raise AddressRangeError(f"Y{index:o} is outside the Y range (max Y{prof.y_max_octal:o})")
 
 
 def parse_tag(text: str, profile: SeriesProfile | None = None) -> ParsedTag:
