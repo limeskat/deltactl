@@ -31,6 +31,18 @@ def test_on_change_emits_first_and_changed():
     import asyncio; asyncio.run(go())
     assert [f.values for f in frames] == [{"D100": 1}, {"D100": 3}]
 
+def test_seq_counts_only_emitted_frames():
+    client, clock = FakeClient(values=(1, 1, 3)), FakeClock()
+    poller = TagPoller(client, ["D100"], interval=1.0, on_change=True,
+                       deadband=2.0, clock=clock.now, sleep=clock.sleep)
+    frames = []
+    async def go():
+        for _ in range(3):
+            await poller._poll_once(clock.now(), Capture(frames))
+            clock.t += 1
+    import asyncio; asyncio.run(go())
+    assert [f.seq for f in frames] == [1, 2]
+
 def test_heartbeat_full_snapshot():
     client, clock = FakeClient(values=(7, 7)), FakeClock()
     poller = TagPoller(client, ["D100", "M0"], interval=1.0, on_change=True,

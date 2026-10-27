@@ -365,11 +365,13 @@ class TagPoller:
         else:
             error = await self._reconnect(now)
             quality, values, rtt_ms = "BAD", {}, 0.0
-        self._seq += 1
         selected = self._select(now, quality, values)
         if selected is None:
             return 0
         emitted, heartbeat = selected
+        # ``seq`` counts emitted frames only, so suppressed cycles do not
+        # leave gaps in the stream consumers see.
+        self._seq += 1
         frame = Frame(
             ts=datetime.now().astimezone().isoformat(timespec="milliseconds"),
             seq=self._seq,
