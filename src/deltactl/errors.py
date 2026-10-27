@@ -11,6 +11,8 @@ __all__ = [
     "DeltaProtocolError",
     "DeltaTimeoutError",
     "DeltaValueError",
+    "ModelDetectionError",
+    "ModelMismatchError",
     "NotConnectedError",
     "PollerError",
     "ReadOnlyAddressError",
@@ -20,6 +22,14 @@ __all__ = [
 
 class DeltaPLCError(Exception):
     """Base class for every error raised by this driver."""
+
+
+class ModelDetectionError(DeltaPLCError):
+    """Raised when querying D1001 fails due to network timeout or Modbus error."""
+
+
+class ModelMismatchError(DeltaPLCError):
+    """Raised in strict mode when configured series differs from detected hardware."""
 
 
 class DeltaAddressError(DeltaPLCError):

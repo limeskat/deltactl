@@ -20,6 +20,7 @@ from typing import Any, TypeVar
 
 from .errors import DeltaTimeoutError
 from .planning import ReadGroup
+from .profiles import SeriesProfile
 from .transport import AsyncDeltaPLC, GroupResult
 
 __all__ = ["DeltaPLC"]
@@ -104,6 +105,8 @@ class DeltaPLC:
         max_write_registers: int = 100,
         max_write_bits: int = 256,
         auto_connect: bool = False,
+        series: str = "auto",
+        strict_series: bool = False,
         sync_call_timeout: float = 120.0,
     ) -> None:
         options: dict[str, Any] = {
@@ -118,6 +121,8 @@ class DeltaPLC:
             "max_write_registers": max_write_registers,
             "max_write_bits": max_write_bits,
             "auto_connect": auto_connect,
+            "series": series,
+            "strict_series": strict_series,
         }
         self.sync_call_timeout = sync_call_timeout
         self._loop_thread = _LoopThread()
@@ -131,6 +136,21 @@ class DeltaPLC:
         atexit.register(self.close)
 
     # -- lifecycle ---------------------------------------------------------
+
+    @property
+    def configured_profile(self) -> SeriesProfile | None:
+        """Configured hardware profile, or None if auto."""
+        return self._client.configured_profile
+
+    @property
+    def detected_profile(self) -> SeriesProfile | None:
+        """Hardware profile detected from D1001, or None before connect / if probe failed."""
+        return self._client.detected_profile
+
+    @property
+    def effective_profile(self) -> SeriesProfile:
+        """Active profile governing valid addresses and chunk boundaries."""
+        return self._client.effective_profile
 
     @property
     def is_connected(self) -> bool:

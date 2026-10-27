@@ -12,9 +12,12 @@ from .errors import (
     DeltaProtocolError,
     DeltaTimeoutError,
     DeltaValueError,
+    ModelDetectionError,
+    ModelMismatchError,
     NotConnectedError,
     PollerError,
     ReadOnlyAddressError,
+    UnknownModelCodeError,
 )
 from .mock import MockServer
 from .planning import Tag
@@ -38,10 +41,13 @@ __all__ = [
     "DeltaValueError",
     "Frame",
     "MockServer",
+    "ModelDetectionError",
+    "ModelMismatchError",
     "NotConnectedError",
     "PollerError",
     "ReadOnlyAddressError",
     "Tag",
     "TagPoller",
+    "UnknownModelCodeError",
     "__version__",
 ]

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,7 +32,10 @@ from .errors import (
     DeltaProtocolError,
     DeltaTimeoutError,
     DeltaValueError,
+    ModelDetectionError,
+    ModelMismatchError,
     NotConnectedError,
+    UnknownModelCodeError,
 )
 from .packing import (
     DType,
@@ -44,6 +48,13 @@ from .packing import (
     set_bit,
 )
 from .planning import ReadGroup, Tag, make_tag, make_tags, plan_chunks, plan_reads
+from .profiles import (
+    DEFAULT_PROFILE,
+    SeriesProfile,
+    decode_d1001,
+    get_profile,
+    intersect_profiles,
+)
 
 __all__ = ["AsyncDeltaPLC", "GroupResult", "decode_group_values"]
 
@@ -198,6 +209,8 @@ class AsyncDeltaPLC:
         max_write_registers: int = 100,
         max_write_bits: int = 256,
         auto_connect: bool = False,
+        series: str = "auto",
+        strict_series: bool = False,
     ) -> None:
         self.host = host
         self.port = port
@@ -211,6 +224,15 @@ class AsyncDeltaPLC:
         self.max_write_registers = max_write_registers
         self.max_write_bits = max_write_bits
         self.auto_connect = auto_connect
+        if isinstance(series, SeriesProfile):
+            self._configured_profile: SeriesProfile | None = series
+        elif series == "auto":
+            self._configured_profile = None
+        else:
+            self._configured_profile = get_profile(series)
+        self._strict_series = strict_series
+        self._detected_profile: SeriesProfile | None = None
+        self._effective_profile: SeriesProfile = self._configured_profile or DEFAULT_PROFILE
         # The driver owns retry and reconnect policy, so pymodbus defaults are off.
         self._client = AsyncModbusTcpClient(
             host, port=port, timeout=timeout, retries=0, reconnect_delay=0
@@ -218,6 +240,21 @@ class AsyncDeltaPLC:
         self._lock = asyncio.Lock()
 
     # -- lifecycle ---------------------------------------------------------
+
+    @property
+    def configured_profile(self) -> SeriesProfile | None:
+        """Configured hardware profile, or None if series='auto'."""
+        return self._configured_profile
+
+    @property
+    def detected_profile(self) -> SeriesProfile | None:
+        """Hardware profile detected from D1001, or None before connect / if probe failed."""
+        return self._detected_profile
+
+    @property
+    def effective_profile(self) -> SeriesProfile:
+        """Active profile governing valid addresses and chunk boundaries."""
+        return self._effective_profile
 
     @property
     def is_connected(self) -> bool:
@@ -247,12 +284,128 @@ class AsyncDeltaPLC:
         """Connect without the lock; the caller must already hold it."""
         try:
             connected = await asyncio.wait_for(self._client.connect(), self.connect_timeout)
-        except (asyncio.TimeoutError, OSError) as exc:
+        except (asyncio.TimeoutError, OSError, ConnectionException, ModbusException) as exc:
+            if self._strict_series:
+                raise ModelDetectionError(f"failed to probe model ID: {exc}") from exc
             raise DeltaConnectionError(
                 f"could not connect to {self.host}:{self.port}: {exc}"
             ) from exc
         if not connected:
+            if self._strict_series:
+                raise ModelDetectionError(f"failed to connect to {self.host}:{self.port}")
             raise DeltaConnectionError(f"could not connect to {self.host}:{self.port}")
+
+        await self._detect_model_locked()
+
+    async def _detect_model_locked(self) -> None:
+        """Probe D1001 (0x13E9) to detect PLC hardware model under lock."""
+        try:
+            resp = await self._client.read_holding_registers(0x13E9, count=1, device_id=self.unit)
+        except (
+            ModbusIOException,
+            asyncio.TimeoutError,
+            ConnectionException,
+            OSError,
+            ModbusException,
+        ) as exc:
+            if self._strict_series:
+                raise ModelDetectionError(f"failed to probe model ID: {exc}") from exc
+            if self._configured_profile is None:
+                warnings.warn(
+                    f"failed to detect PLC model: {exc}; using fallback profile",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                self._effective_profile = DEFAULT_PROFILE
+            else:
+                warnings.warn(
+                    f"could not verify hardware model: {exc}; using configured '{self._configured_profile.name}'",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                self._effective_profile = self._configured_profile
+            return
+
+        if resp.isError():
+            if self._strict_series:
+                raise ModelDetectionError(f"Modbus error reading D1001: {resp}")
+            if self._configured_profile is None:
+                warnings.warn(
+                    f"failed to detect PLC model: Modbus error {resp}; using fallback profile",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                self._effective_profile = DEFAULT_PROFILE
+            else:
+                warnings.warn(
+                    f"could not verify hardware model: Modbus error {resp}; using configured '{self._configured_profile.name}'",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                self._effective_profile = self._configured_profile
+            return
+
+        registers = getattr(resp, "registers", None)
+        if not registers:
+            if self._strict_series:
+                raise ModelDetectionError("empty registers reading D1001")
+            if self._configured_profile is None:
+                warnings.warn(
+                    "failed to detect PLC model: empty response reading D1001; using fallback profile",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                self._effective_profile = DEFAULT_PROFILE
+            else:
+                warnings.warn(
+                    f"could not verify hardware model: empty response reading D1001; using configured '{self._configured_profile.name}'",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                self._effective_profile = self._configured_profile
+            return
+
+        raw = registers[0]
+        try:
+            detected, _fw = decode_d1001(raw)
+        except UnknownModelCodeError:
+            if self._strict_series:
+                raise
+            upper_byte = (raw >> 8) & 0xFF
+            if self._configured_profile is None:
+                warnings.warn(
+                    f"unrecognized model code 0x{upper_byte:02X} in D1001; using fallback",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                self._effective_profile = DEFAULT_PROFILE
+            else:
+                warnings.warn(
+                    f"unrecognized hardware model code 0x{upper_byte:02X} in D1001; using configured '{self._configured_profile.name}'",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                self._effective_profile = self._configured_profile
+        else:
+            self._detected_profile = detected
+            if self._configured_profile is None:
+                self._effective_profile = detected
+            else:
+                if self._configured_profile == detected:
+                    self._effective_profile = self._configured_profile
+                else:
+                    if self._strict_series:
+                        raise ModelMismatchError(
+                            f"configured series '{self._configured_profile.name}' does not match "
+                            f"detected hardware model '{detected.name}' (D1001=0x{raw:04X})"
+                        )
+                    warnings.warn(
+                        f"configured series '{self._configured_profile.name}' differs from "
+                        f"detected hardware '{detected.name}' (0x{raw:04X})",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    self._effective_profile = intersect_profiles(self._configured_profile, detected)
 
     async def _ensure_connected_locked(self) -> None:
         """Require a connection, or make one when ``auto_connect`` is set."""
@@ -294,7 +447,7 @@ class AsyncDeltaPLC:
 
     async def read_bits(self, tag: str, count: int = 1) -> bool | list[bool]:
         """Read *count* M/X/Y wire bits (scalar when ``count == 1``)."""
-        parsed = make_tag(tag, DType.BIT)
+        parsed = make_tag(tag, DType.BIT, profile=self.effective_profile)
         if parsed.address.device is Device.D:
             raise DeltaValueError(
                 f"read_bits supports only M/X/Y tags; read {tag!r} as a word bit "
@@ -310,7 +463,7 @@ class AsyncDeltaPLC:
         normalized keys are rejected before any I/O; the first group error is
         raised after the plan runs.
         """
-        parsed = make_tags(tags)
+        parsed = make_tags(tags, profile=self.effective_profile)
         names = [tag.name for tag in parsed]
         seen: set[str] = set()
         for name in names:
@@ -373,7 +526,7 @@ class AsyncDeltaPLC:
 
     async def write_bits(self, tag: str, value: Any) -> None:
         """Write one or more M/X/Y wire bits; D tags raise ``DeltaValueError``."""
-        parsed = make_tag(tag, DType.BIT)
+        parsed = make_tag(tag, DType.BIT, profile=self.effective_profile)
         if parsed.address.device is Device.D:
             raise DeltaValueError(
                 f"write_bits supports only M/X/Y tags; write {tag!r} as a word bit "
@@ -390,7 +543,7 @@ class AsyncDeltaPLC:
         inline ``:i16``/``:i32``/``:u32``/``:f32`` tag encodes through
         ``packing`` like the typed writes.
         """
-        parsed = make_tag(tag)
+        parsed = make_tag(tag, profile=self.effective_profile)
         values: list[Any]
         if parsed.dtype is DType.BIT:
             if parsed.address.device is Device.D:
@@ -405,7 +558,7 @@ class AsyncDeltaPLC:
 
     async def _write_typed(self, tag: str, dtype: DType, value: Any) -> None:
         """Shared body of the typed writes; encodes through ``packing``."""
-        parsed = make_tag(tag, dtype)
+        parsed = make_tag(tag, dtype, profile=self.effective_profile)
         await self._guard_and_write(parsed, _encode_write(value, parsed.dtype))
 
     async def _guard_and_write(self, tag: Tag, values: list[Any]) -> None:
@@ -419,7 +572,13 @@ class AsyncDeltaPLC:
         bit_like = tag.dtype is DType.BIT
         count = len(values) if bit_like else len(values) // tag.width
         total = count * tag.width if tag.address.device is Device.D else count
-        validate_span(tag.address, total, write=True, allow_block_crossing=True)
+        validate_span(
+            tag.address,
+            total,
+            write=True,
+            allow_block_crossing=True,
+            profile=self.effective_profile,
+        )
         async with self._lock:
             await self._ensure_connected_locked()
             await self._write_locked(tag, values)
@@ -442,6 +601,7 @@ class AsyncDeltaPLC:
                 len(values) // tag.width,
                 max_registers=self.max_write_registers,
                 max_bits=self.max_write_bits,
+                profile=self.effective_profile,
             )
             for chunk in chunks:
                 registers = values[
@@ -458,6 +618,7 @@ class AsyncDeltaPLC:
                 len(values),
                 max_registers=self.max_write_registers,
                 max_bits=self.max_write_bits,
+                profile=self.effective_profile,
             )
             for chunk in chunks:
                 bits = values[chunk.first : chunk.first + chunk.values]
@@ -547,7 +708,7 @@ class AsyncDeltaPLC:
 
     async def _read_typed(self, tag: str, dtype: DType | None, count: int) -> Any:
         """Shared body of ``read`` and the typed reads; validates before I/O."""
-        parsed = make_tag(tag, dtype)
+        parsed = make_tag(tag, dtype, profile=self.effective_profile)
         if parsed.dtype is DType.BIT:
             if count != 1:
                 raise DeltaValueError(f"{parsed.name} is a bit tag: count must be 1, got {count}")
@@ -577,6 +738,7 @@ class AsyncDeltaPLC:
             count,
             max_registers=self.max_read_registers,
             max_bits=self.max_read_bits,
+            profile=self.effective_profile,
         )
         function = _function_for(tag)
         values: list[int | float] = []
@@ -596,6 +758,7 @@ class AsyncDeltaPLC:
             count,
             max_registers=self.max_read_registers,
             max_bits=self.max_read_bits,
+            profile=self.effective_profile,
         )
         function = _function_for(tag)
         out: list[bool] = []
