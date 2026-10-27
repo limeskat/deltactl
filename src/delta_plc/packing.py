@@ -8,8 +8,8 @@
 from __future__ import annotations
 
 import struct
+from collections.abc import Sequence
 from enum import Enum
-from typing import Sequence
 
 from pymodbus.client.mixin import ModbusClientMixin
 
@@ -59,7 +59,7 @@ _MODBUS_DTYPES: dict[DType, ModbusClientMixin.DATATYPE] = {
 _PACK_ERRORS = (TypeError, struct.error, ValueError, OverflowError)
 
 
-def encode_value(value: int | float | bool, dtype: DType) -> list[int]:
+def encode_value(value: float | bool, dtype: DType) -> list[int]:
     """Encode a single Python value into registers for *dtype*."""
     dtype = DType(dtype)
     if isinstance(value, bool) and dtype is not DType.BIT:
@@ -94,9 +94,7 @@ def decode_value(registers: Sequence[int], dtype: DType) -> int | float:
     dtype = DType(dtype)
     regs = list(registers)
     if len(regs) != dtype.width:
-        raise DeltaValueError(
-            f"{dtype.value} needs {dtype.width} registers, got {len(regs)}"
-        )
+        raise DeltaValueError(f"{dtype.value} needs {dtype.width} registers, got {len(regs)}")
     if dtype not in _MODBUS_DTYPES:
         word = regs[0]
         if not isinstance(word, int) or isinstance(word, bool) or not 0 <= word <= 0xFFFF:
@@ -104,11 +102,14 @@ def decode_value(registers: Sequence[int], dtype: DType) -> int | float:
         fmt = ">H" if dtype in (DType.U16, DType.BIT) else ">h"
         return struct.unpack(fmt, struct.pack(">H", word))[0]
     try:
-        return ModbusClientMixin.convert_from_registers(
+        val = ModbusClientMixin.convert_from_registers(
             regs, _MODBUS_DTYPES[dtype], word_order="little"
         )
     except _PACK_ERRORS as exc:
         raise DeltaValueError(f"cannot decode {regs!r} as {dtype.value}") from exc
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return val
+    raise DeltaValueError(f"cannot decode {regs!r} as {dtype.value}")
 
 
 def encode_values(values: Sequence[int | float | bool], dtype: DType) -> list[int]:

@@ -122,9 +122,9 @@ class DeltaPLC:
         self._closed = False
         # pymodbus captures the running loop in its constructor, so the async
         # client must be built on the loop thread, not on the caller's thread.
-        self._client = self._submit_raw(
-            lambda: AsyncDeltaPLC(host, **options)
-        ).result(sync_call_timeout)
+        self._client = self._submit_raw(lambda: AsyncDeltaPLC(host, **options)).result(
+            sync_call_timeout
+        )
         atexit.register(self.close)
 
     # -- lifecycle ---------------------------------------------------------

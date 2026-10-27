@@ -89,8 +89,7 @@ def make_tag(text: str, default_dtype: DType | None = None) -> Tag:
     if bit_like:
         if default_dtype is not None and default_dtype is not DType.BIT:
             raise DeltaValueError(
-                f"{parsed.display} is a bit tag: only DType.BIT is valid, "
-                f"got {default_dtype.value}"
+                f"{parsed.display} is a bit tag: only DType.BIT is valid, got {default_dtype.value}"
             )
         dtype = DType.BIT if inline is None else inline
     else:
@@ -232,9 +231,7 @@ def plan_chunks(
                 f"crosses the {device.value}{split - 1}|{device.value}{split} "
                 f"block boundary"
             )
-        if values and (
-            (values + 1) * value_width > cap or value_block != first_block
-        ):
+        if values and ((values + 1) * value_width > cap or value_block != first_block):
             chunks.append(
                 Chunk(
                     start=wire_for(device, address.index + first * value_width),

@@ -107,9 +107,7 @@ def plc_warnings(plc: dict[str, Any]) -> list[str]:
     if isinstance(wdt_ms, (int, float)) and isinstance(scan_ms, dict):
         max_scan = scan_ms.get("max")
         if isinstance(max_scan, (int, float)) and max_scan >= 0.8 * wdt_ms:
-            warnings.append(
-                f"Max scan time ({max_scan} ms) >= 80% of watchdog ({wdt_ms} ms)"
-            )
+            warnings.append(f"Max scan time ({max_scan} ms) >= 80% of watchdog ({wdt_ms} ms)")
 
     return warnings
 
@@ -306,12 +304,16 @@ def _check_interface_sync(target: str | None) -> tuple[CheckResult, str | None]:
             status_out = res.stdout.strip().lower()
             if status_out in ("disabled", "disconnected"):
                 return (
-                    CheckResult("interface", "FAIL", f"Interface {dev} status: {res.stdout.strip()}"),
+                    CheckResult(
+                        "interface", "FAIL", f"Interface {dev} status: {res.stdout.strip()}"
+                    ),
                     dev,
                 )
             if status_out:
                 return (
-                    CheckResult("interface", "PASS", f"Interface {dev} status: {res.stdout.strip()}"),
+                    CheckResult(
+                        "interface", "PASS", f"Interface {dev} status: {res.stdout.strip()}"
+                    ),
                     dev,
                 )
         except (subprocess.SubprocessError, OSError):
@@ -472,7 +474,9 @@ def _check_arp_sync() -> CheckResult:
         res = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=5)
     except FileNotFoundError:
         try:
-            res = subprocess.run(["arp", "-a"], check=False, capture_output=True, text=True, timeout=5)
+            res = subprocess.run(
+                ["arp", "-a"], check=False, capture_output=True, text=True, timeout=5
+            )
         except (subprocess.SubprocessError, OSError):
             return CheckResult("arp", "SKIP", "ARP tool not available")
     except (subprocess.SubprocessError, OSError) as e:
@@ -672,9 +676,7 @@ async def run_doctor(
     checks.append(tcp_res)
 
     if tcp_res.status == "PASS":
-        modbus_res, plc_res, plc_dict = await _check_modbus_and_plc(
-            host, port, unit, timeout
-        )
+        modbus_res, plc_res, plc_dict = await _check_modbus_and_plc(host, port, unit, timeout)
         checks.append(modbus_res)
         checks.append(plc_res)
     else:

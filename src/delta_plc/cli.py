@@ -62,6 +62,7 @@ def _rewrite_negative_base(token: str) -> str:
             return token
     return token
 
+
 # Pre-I/O validation errors that are the caller's fault and exit 2.
 _USAGE_ERRORS = (
     AddressSyntaxError,
@@ -86,9 +87,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--host", metavar="HOST", default=argparse.SUPPRESS)
     group.add_argument("--port", type=int, metavar="PORT", default=argparse.SUPPRESS)
     group.add_argument("--unit", type=int, metavar="ID", default=argparse.SUPPRESS)
-    group.add_argument(
-        "--timeout", type=float, metavar="SECONDS", default=argparse.SUPPRESS
-    )
+    group.add_argument("--timeout", type=float, metavar="SECONDS", default=argparse.SUPPRESS)
     group.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     group.add_argument("-v", "--verbose", action="count", default=argparse.SUPPRESS)
     group.add_argument("-q", "--quiet", action="store_true", default=argparse.SUPPRESS)
@@ -98,9 +97,7 @@ def _add_read_options(parser: argparse.ArgumentParser) -> None:
     """Add the ``read``-specific positionals and options."""
     parser.add_argument("tags", nargs="*", metavar="TAG")
     parser.add_argument("--count", type=int, metavar="N", default=argparse.SUPPRESS)
-    parser.add_argument(
-        "--dtype", type=str.lower, choices=_DTYPES, default=argparse.SUPPRESS
-    )
+    parser.add_argument("--dtype", type=str.lower, choices=_DTYPES, default=argparse.SUPPRESS)
     parser.add_argument("--raw", metavar="ADDR", default=argparse.SUPPRESS)
     parser.add_argument(
         "--raw-type",
@@ -113,9 +110,7 @@ def _add_read_options(parser: argparse.ArgumentParser) -> None:
 def _add_write_options(parser: argparse.ArgumentParser) -> None:
     """Add the ``write``-specific positionals and options."""
     parser.add_argument("args", nargs="+", metavar="ARG")
-    parser.add_argument(
-        "--dtype", type=str.lower, choices=_DTYPES, default=argparse.SUPPRESS
-    )
+    parser.add_argument("--dtype", type=str.lower, choices=_DTYPES, default=argparse.SUPPRESS)
     parser.add_argument("--raw", metavar="ADDR", default=argparse.SUPPRESS)
     parser.add_argument(
         "--raw-type",
@@ -284,9 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common(parser)
     parser.set_defaults(_parser=parser)
-    subparsers = parser.add_subparsers(
-        dest="command", metavar="COMMAND", required=True
-    )
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
 
     read = subparsers.add_parser("read", help="read one or more tags")
     _add_common(read)
@@ -298,23 +291,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_write_options(write)
     write.set_defaults(_parser=write)
 
-    watch = subparsers.add_parser(
-        "watch", help="poll tags on an interval and stream frames"
-    )
+    watch = subparsers.add_parser("watch", help="poll tags on an interval and stream frames")
     _add_common(watch)
     _add_watch_options(watch)
     watch.set_defaults(_parser=watch)
 
-    doctor = subparsers.add_parser(
-        "doctor", help="diagnose network and PLC health"
-    )
+    doctor = subparsers.add_parser("doctor", help="diagnose network and PLC health")
     _add_common(doctor)
     _add_doctor_options(doctor)
     doctor.set_defaults(_parser=doctor)
 
-    mock = subparsers.add_parser(
-        "mock", help="run a hardware-faithful mock PLC server"
-    )
+    mock = subparsers.add_parser("mock", help="run a hardware-faithful mock PLC server")
     _add_common(mock)
     _add_mock_options(mock)
     mock.set_defaults(_parser=mock)
@@ -423,9 +410,7 @@ def _common_settings(
     return host, port, unit, timeout
 
 
-def _resolve_int(
-    args: argparse.Namespace, attr: str, env: str, default: int
-) -> int:
+def _resolve_int(args: argparse.Namespace, attr: str, env: str, default: int) -> int:
     """Flag value, else ``env`` parsed as decimal, else *default*."""
     value = getattr(args, attr, None)
     if value is not None:
@@ -439,9 +424,7 @@ def _resolve_int(
         raise DeltaValueError(f"invalid {env}={raw!r}: expected an integer") from None
 
 
-def _resolve_float(
-    args: argparse.Namespace, attr: str, env: str, default: float
-) -> float:
+def _resolve_float(args: argparse.Namespace, attr: str, env: str, default: float) -> float:
     """Flag value, else ``env`` parsed as a float, else *default*."""
     value = getattr(args, attr, None)
     if value is not None:
@@ -455,9 +438,7 @@ def _resolve_float(
         raise DeltaValueError(f"invalid {env}={raw!r}: expected a number") from None
 
 
-def _check_dtype_target(
-    text: str, dtype: str | None, parser: argparse.ArgumentParser
-) -> None:
+def _check_dtype_target(text: str, dtype: str | None, parser: argparse.ArgumentParser) -> None:
     """Reject ``--dtype`` unless *text* is a plain (non-bit) D tag."""
     if dtype is None:
         return
@@ -505,9 +486,7 @@ def _cmd_read(args: argparse.Namespace) -> int:
     value_count = (count or 1) if single else 1
     for tag in resolved:
         if tag.dtype is DType.BIT and tag.address.device is Device.D and value_count > 1:
-            raise DeltaValueError(
-                f"{tag.name} is a D word bit; --count is not supported"
-            )
+            raise DeltaValueError(f"{tag.name} is a D word bit; --count is not supported")
         plan_chunks(tag.address, tag.width, value_count)
 
     host, port, unit, timeout = _common_settings(args, parser)
@@ -524,9 +503,7 @@ def _cmd_read(args: argparse.Namespace) -> int:
     return 0
 
 
-def _read_one(
-    plc: DeltaPLC, tag: Tag, count: int
-) -> list[int | float | bool]:
+def _read_one(plc: DeltaPLC, tag: Tag, count: int) -> list[int | float | bool]:
     """Read *count* values for one resolved tag, always as a list."""
     if tag.dtype is DType.BIT:
         if tag.address.device is Device.D:
@@ -566,8 +543,7 @@ def _emit_read(
             "unit": unit,
             "ts": _timestamp(),
             "values": {
-                name: (values[0] if len(values) == 1 else list(values))
-                for name, values in results
+                name: (values[0] if len(values) == 1 else list(values)) for name, values in results
             },
         }
         print(json.dumps(payload))
@@ -710,9 +686,7 @@ def _plan_frames(tag: Tag, encoded: Sequence[Any], count: int) -> list[dict[str,
     return frames
 
 
-def _frame(
-    function: int, wire: int, count: int, values: Sequence[Any]
-) -> dict[str, Any]:
+def _frame(function: int, wire: int, count: int, values: Sequence[Any]) -> dict[str, Any]:
     """One dry-run frame: function code, wire address, count, encoded values."""
     return {
         "fc": function,
@@ -729,8 +703,7 @@ def _emit_dry_run(frames: Sequence[dict[str, Any]], use_json: bool) -> None:
         return
     for frame in frames:
         print(
-            f"FC{frame['fc']} wire={frame['wire']} "
-            f"count={frame['count']} values={frame['values']}"
+            f"FC{frame['fc']} wire={frame['wire']} count={frame['count']} values={frame['values']}"
         )
 
 
@@ -765,9 +738,7 @@ async def _watch(
         deadband=args.deadband,
         heartbeat=args.heartbeat,
     )
-    return await poller.run(
-        duration=args.duration, count=args.count, writer=writer
-    )
+    return await poller.run(duration=args.duration, count=args.count, writer=writer)
 
 
 async def _run_watch(
@@ -893,11 +864,7 @@ def _emit_doctor(report: DoctorReport) -> None:
 
 def _cmd_mock(args: argparse.Namespace) -> int:
     """Implement ``plc mock``."""
-    host, port = (
-        args.listen
-        if isinstance(args.listen, tuple)
-        else _parse_listen(args.listen)
-    )
+    host, port = args.listen if isinstance(args.listen, tuple) else _parse_listen(args.listen)
     seed = None
     if getattr(args, "seed", None) is not None:
         with open(args.seed, "r", encoding="utf-8") as f:

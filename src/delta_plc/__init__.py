@@ -16,6 +16,9 @@ from .errors import (
     PollerError,
     ReadOnlyAddressError,
 )
+from .mock import MockServer
+from .planning import Tag
+from .poller import Frame, TagPoller
 from .transport import AsyncDeltaPLC
 
 __version__ = "0.1.0"
@@ -33,8 +36,12 @@ __all__ = [
     "DeltaProtocolError",
     "DeltaTimeoutError",
     "DeltaValueError",
+    "Frame",
+    "MockServer",
     "NotConnectedError",
     "PollerError",
     "ReadOnlyAddressError",
+    "Tag",
+    "TagPoller",
     "__version__",
 ]

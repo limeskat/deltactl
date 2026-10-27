@@ -115,9 +115,7 @@ def decode_group_values(
             else:
                 values[tag.name] = bool(bits[offset])
         else:
-            values[tag.name] = decode_value(
-                registers[offset : offset + tag.width], tag.dtype
-            )
+            values[tag.name] = decode_value(registers[offset : offset + tag.width], tag.dtype)
     return values
 
 
@@ -142,9 +140,7 @@ def _wire_bits(value: Any) -> list[bool]:
     try:
         return [_as_bit(item) for item in value]
     except TypeError:
-        raise DeltaValueError(
-            f"{value!r} is not a valid bit value or sequence of bits"
-        ) from None
+        raise DeltaValueError(f"{value!r} is not a valid bit value or sequence of bits") from None
 
 
 def _masked_values(value: Any) -> list[int]:
@@ -250,9 +246,7 @@ class AsyncDeltaPLC:
     async def _connect_locked(self) -> None:
         """Connect without the lock; the caller must already hold it."""
         try:
-            connected = await asyncio.wait_for(
-                self._client.connect(), self.connect_timeout
-            )
+            connected = await asyncio.wait_for(self._client.connect(), self.connect_timeout)
         except (asyncio.TimeoutError, OSError) as exc:
             raise DeltaConnectionError(
                 f"could not connect to {self.host}:{self.port}: {exc}"
@@ -334,9 +328,7 @@ class AsyncDeltaPLC:
                 raise result.error
         decoded: dict[str, int | float | bool] = {}
         for result in results:
-            decoded.update(
-                decode_group_values(result.group, result.registers, result.bits)
-            )
+            decoded.update(decode_group_values(result.group, result.registers, result.bits))
         return {name: decoded[name] for name in names}
 
     async def read_planned(
@@ -513,14 +505,10 @@ class AsyncDeltaPLC:
                         await self._connect_locked()
                     except DeltaPLCError:
                         pass
-                await asyncio.sleep(
-                    _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
-                )
+                await asyncio.sleep(_RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)])
                 attempt += 1
 
-    async def _write_once(
-        self, function: int, start: int, values: list[Any]
-    ) -> None:
+    async def _write_once(self, function: int, start: int, values: list[Any]) -> None:
         """Issue one write PDU; a non-error response is success.
 
         Errors map exactly as ``_read_once``: timeouts to ``DeltaTimeoutError``,
@@ -531,9 +519,7 @@ class AsyncDeltaPLC:
         try:
             method_name = _WRITE_METHOD_FOR[function]
         except KeyError:
-            raise DeltaProtocolError(
-                f"unsupported write function code {function}"
-            ) from None
+            raise DeltaProtocolError(f"unsupported write function code {function}") from None
         argument: Any = values[0] if function in (5, 6) else values
         try:
             response = await getattr(self._client, method_name)(
@@ -564,9 +550,7 @@ class AsyncDeltaPLC:
         parsed = make_tag(tag, dtype)
         if parsed.dtype is DType.BIT:
             if count != 1:
-                raise DeltaValueError(
-                    f"{parsed.name} is a bit tag: count must be 1, got {count}"
-                )
+                raise DeltaValueError(f"{parsed.name} is a bit tag: count must be 1, got {count}")
             return await self._read_bit(parsed)
         if count < 1:
             raise DeltaValueError(f"count must be at least 1, got {count}")
@@ -600,9 +584,7 @@ class AsyncDeltaPLC:
             await self._ensure_connected_locked()
             for chunk in chunks:
                 group = ReadGroup(function, chunk.start, chunk.count, ())
-                registers, _, _ = await self._read_group_locked(
-                    group, self.read_retries
-                )
+                registers, _, _ = await self._read_group_locked(group, self.read_retries)
                 values.extend(decode_values(registers, tag.dtype))
         return values
 
@@ -641,9 +623,7 @@ class AsyncDeltaPLC:
                 results.append(GroupResult(group, error=stop))
                 continue
             try:
-                registers, bits, elapsed_ms = await self._read_group_locked(
-                    group, retries
-                )
+                registers, bits, elapsed_ms = await self._read_group_locked(group, retries)
             except _RETRYABLE as exc:
                 stop = exc
                 results.append(GroupResult(group, error=exc))
@@ -679,9 +659,7 @@ class AsyncDeltaPLC:
                         await self._connect_locked()
                     except DeltaPLCError:
                         pass
-                await asyncio.sleep(
-                    _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
-                )
+                await asyncio.sleep(_RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)])
                 attempt += 1
 
     async def _read_once(self, group: ReadGroup) -> tuple[list[int], list[bool], float]:
@@ -696,9 +674,7 @@ class AsyncDeltaPLC:
         try:
             method_name = _METHOD_FOR[group.function]
         except KeyError:
-            raise DeltaProtocolError(
-                f"unsupported read function code {group.function}"
-            ) from None
+            raise DeltaProtocolError(f"unsupported read function code {group.function}") from None
         start = time.perf_counter()
         try:
             response = await getattr(self._client, method_name)(
@@ -731,7 +707,6 @@ class AsyncDeltaPLC:
             received = len(bits)
         if received < group.count:
             raise DeltaProtocolError(
-                f"{group.function}@{group.start}: expected {group.count} values, "
-                f"got {received}"
+                f"{group.function}@{group.start}: expected {group.count} values, got {received}"
             )
         return registers[: group.count], bits, elapsed_ms

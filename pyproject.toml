@@ -37,9 +37,14 @@ packages = ["src/delta_plc"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "--cov=delta_plc --cov-branch --cov-report=term-missing"
+
+[tool.coverage.report]
+fail_under = 85
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["docs"]
 
 [tool.mypy]
 files = ["src/delta_plc"]

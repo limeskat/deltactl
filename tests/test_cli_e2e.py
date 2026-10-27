@@ -3,7 +3,9 @@ import re
 import subprocess
 import sys
 import threading
+
 from delta_plc.cli import main
+
 
 def _readline(stream, timeout=5.0):
     box = {}
@@ -13,10 +15,13 @@ def _readline(stream, timeout=5.0):
     assert not thread.is_alive(), "mock did not print its listening address"
     return box["line"]
 
+
 def test_mock_subprocess_and_all_commands():
     proc = subprocess.Popen(
         [sys.executable, "-m", "delta_plc.cli", "mock", "--listen", "127.0.0.1:0"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     try:
         line = _readline(proc.stderr)

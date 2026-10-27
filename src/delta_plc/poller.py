@@ -123,9 +123,7 @@ class NdjsonWriter:
     def write(self, frame: Frame) -> None:
         """Serialize *frame* as one sanitized JSON line and flush."""
         payload = _sanitize(frame.to_dict())
-        self._stream.write(
-            json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n"
-        )
+        self._stream.write(json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n")
         self.flush()
 
     def flush(self) -> None:
@@ -217,9 +215,7 @@ class TableWriter:
             frame.quality,
             frame.error if frame.error is not None else "-",
         ]
-        cells.extend(
-            _format_scalar(frame.values.get(name)) or "-" for name in self._tags
-        )
+        cells.extend(_format_scalar(frame.values.get(name)) or "-" for name in self._tags)
         self._stream.write(self._line(cells))
 
     def flush(self) -> None:
@@ -232,9 +228,7 @@ class TableWriter:
     def _line(self, cells: Sequence[str]) -> str:
         """Left-justify *cells* into the fixed columns and end the line."""
         return (
-            "  ".join(cell.ljust(width) for cell, width in zip(cells, self._widths))
-            .rstrip()
-            + "\n"
+            "  ".join(cell.ljust(width) for cell, width in zip(cells, self._widths)).rstrip() + "\n"
         )
 
 
@@ -281,9 +275,7 @@ class TagPoller:
         rand: Callable[[], float] = random.random,
     ) -> None:
         if interval < _MIN_INTERVAL:
-            raise PollerError(
-                f"interval must be at least {_MIN_INTERVAL}s, got {interval}"
-            )
+            raise PollerError(f"interval must be at least {_MIN_INTERVAL}s, got {interval}")
         if not tags:
             raise PollerError("TagPoller requires at least one tag")
         self._client = client
@@ -307,9 +299,7 @@ class TagPoller:
         self._next_attempt_at = float("-inf")
         self._last_error: str | None = None
         # Filter state: per-tag deadbands and the last *emitted* values/quality.
-        self._deadbands: dict[str, float | None] = {
-            tag.name: tag.deadband for tag in self._tags
-        }
+        self._deadbands: dict[str, float | None] = {tag.name: tag.deadband for tag in self._tags}
         self._last_emitted: dict[str, int | float | bool] = {}
         self._last_quality: str | None = None
         self._last_emit_time: float | None = None
@@ -411,9 +401,7 @@ class TagPoller:
             return dict(values), True
         if not self._on_change:
             return dict(values), False
-        changed = {
-            name: value for name, value in values.items() if self._changed(name, value)
-        }
+        changed = {name: value for name, value in values.items() if self._changed(name, value)}
         if not changed:
             return None
         return changed, False
@@ -465,9 +453,7 @@ class TagPoller:
         decoded: dict[str, int | float | bool] = {}
         for result in results:
             if result.error is None:
-                decoded.update(
-                    decode_group_values(result.group, result.registers, result.bits)
-                )
+                decoded.update(decode_group_values(result.group, result.registers, result.bits))
         # Re-order into the requested tag order; groups are ordered by function.
         values = {tag.name: decoded[tag.name] for tag in self._tags if tag.name in decoded}
         # A dropped connection stops later groups too, so sum what we got.
