@@ -235,6 +235,8 @@ def _build_device(
         scan = round(fixed_scan_ms * 10)
         values[Device.D][1010:1013] = [scan, scan, scan]
     if station_id is not None:
+        if not (0 <= station_id <= 65535):
+            raise ValueError(f"station_id {station_id} out of range 0..65535")
         values[Device.D][1121] = station_id
 
     co = _segments(Device.M, values[Device.M], _M_SEGMENT_SPANS, DataType.BITS)

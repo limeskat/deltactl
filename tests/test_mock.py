@@ -163,3 +163,10 @@ def test_server_lifecycle_idempotency():
         server.stop()
         server.stop()
         assert not server.running
+
+
+def test_station_id_validation():
+    with pytest.raises(ValueError, match="0..65535"):
+        MockServer(port=0, station_id=-1)
+    with pytest.raises(ValueError, match="0..65535"):
+        MockServer(port=0, station_id=65536)
