@@ -60,9 +60,24 @@ async def test_doctor_pass_and_json(mock):
     assert report.plc["wdt_ms"] == 200
     assert report.plc["firmware"] == "0x7C21"
     assert report.plc["scan_ms"] == {"current": 0.4, "min": 0.1, "max": 1.2}
+    assert report.plc["station_id"] == 1
     payload = report.to_dict()
     assert payload["target"] == {"host": "127.0.0.1", "port": mock.address[1], "unit": 1}
     assert {c["name"] for c in payload["checks"]} >= {"tcp502", "modbus", "plc"}
+    plc_check = next(c for c in report.checks if c.name == "plc")
+    assert "station ID 1" in plc_check.detail
+
+
+async def test_doctor_custom_station_id():
+    server = MockServer(port=0, station_id=42)
+    server.start()
+    try:
+        report = await run_doctor("127.0.0.1", port=server.address[1], timeout=1)
+        assert report.verdict == "PASS"
+        assert report.plc is not None
+        assert report.plc["station_id"] == 42
+    finally:
+        server.stop()
 
 
 async def test_doctor_warn_on_fault_and_strict():

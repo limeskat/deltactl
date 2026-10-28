@@ -155,8 +155,9 @@ def _default_values() -> dict[Device, list[Any]]:
     """Full-index value table with the bench defaults applied.
 
     ``D1000=200, D1001=0x7C21, D1002=15872`` (firmware id), ``D1010=4,
-    D1011=1, D1012=12`` (scan time), ``M1000=True`` (run flag); the fault code
-    ``D1067=0`` and fault flag ``M1067=False`` are the zero defaults.
+    D1011=1, D1012=12`` (scan time), ``D1121=1`` (station id), ``M1000=True``
+    (run flag); the fault code ``D1067=0`` and fault flag ``M1067=False`` are
+    the zero defaults.
     """
     values: dict[Device, list[Any]] = {
         Device.D: [0] * _D_COUNT,
@@ -166,6 +167,7 @@ def _default_values() -> dict[Device, list[Any]]:
     }
     values[Device.D][1000:1003] = [200, 0x7C21, 15872]  # firmware id
     values[Device.D][1010:1013] = [4, 1, 12]  # scan time
+    values[Device.D][1121] = 1  # station id
     values[Device.M][1000] = True  # run flag
     # D1067 fault code and M1067 fault flag already default to 0/False.
     return values
@@ -211,6 +213,7 @@ def _build_device(
     fault_code: int | None = None,
     plc_stop: bool = False,
     fixed_scan_ms: float | None = None,
+    station_id: int | None = None,
     action: _SimAction | None = None,
 ) -> SimDevice:
     """Build the single wildcard-unit (id 0) DVP device.
@@ -231,6 +234,8 @@ def _build_device(
     if fixed_scan_ms is not None:
         scan = round(fixed_scan_ms * 10)
         values[Device.D][1010:1013] = [scan, scan, scan]
+    if station_id is not None:
+        values[Device.D][1121] = station_id
 
     co = _segments(Device.M, values[Device.M], _M_SEGMENT_SPANS, DataType.BITS)
     co += _segments(Device.Y, values[Device.Y], ((0, _XY_COUNT, False),), DataType.BITS)
@@ -358,6 +363,7 @@ class MockServer:
         plc_stop: bool = False,
         fixed_scan_ms: float | None = None,
         live_scan: bool = False,
+        station_id: int | None = None,
     ) -> None:
         if fixed_scan_ms is not None and live_scan:
             raise ValueError("fixed_scan_ms and live_scan are mutually exclusive")
@@ -372,6 +378,7 @@ class MockServer:
             fault_code=fault_code,
             plc_stop=plc_stop,
             fixed_scan_ms=fixed_scan_ms,
+            station_id=station_id,
             action=self._action,
         )
         self._stop_event = threading.Event()

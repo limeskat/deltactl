@@ -571,6 +571,7 @@ async def _check_modbus_and_plc(
         "D1011",
         "D1012",
         "D1067",
+        "D1121",
     ]
     try:
         async with AsyncDeltaPLC(host, port=port, unit=unit, timeout=timeout) as plc_client:
@@ -580,6 +581,7 @@ async def _check_modbus_and_plc(
         raw_d1001 = int(data["D1001"])
         plc: dict[str, Any] = {
             "run": bool(data["M1000"]),
+            "station_id": int(data["D1121"]),
             "firmware": f"0x{raw_d1001:04X}",
             "capacity_steps": int(data["D1002"]),
             "wdt_ms": int(data["D1000"]),
@@ -600,13 +602,14 @@ async def _check_modbus_and_plc(
             latency_ms=latency_ms,
         )
         warns = plc_warnings(plc)
+        mode_str = "RUN mode" if plc["run"] else "STOP mode"
         if warns:
             plc_res = CheckResult("plc", "WARN", "; ".join(warns))
         else:
             plc_res = CheckResult(
                 "plc",
                 "PASS",
-                f"RUN mode, no faults, scan max {plc['scan_ms']['max']} ms / WDT {plc['wdt_ms']} ms",
+                f"{mode_str}, station ID {plc['station_id']}, no faults, scan max {plc['scan_ms']['max']} ms / WDT {plc['wdt_ms']} ms",
             )
 
         try:
