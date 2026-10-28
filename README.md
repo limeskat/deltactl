@@ -308,10 +308,11 @@ To prevent accidental hardware lockups, watchdog timeouts, and machine disruptio
 - **Split-Block Boundaries:**
   - `D0–D4095` and `D4096–D11999` are non-contiguous internal blocks. The planner never coalesces across the `D4095`/`D4096` boundary. Writing or reading a 32-bit value at `D4095` raises `BlockBoundaryError`.
   - `M0–M1535` and `M1536–M4095` are likewise kept in distinct request chunks.
-- **Watchdog & Scan Registers:**
+- **Watchdog, Station & Scan Registers:**
   - `D1000`: Watchdog Timer (WDT) setpoint in **1 ms** units (factory default 200 ms).
   - `D1001`: Hardware and firmware identifier (e.g. `0x7C21` where `0x7C` = SE model and `0x21` = v2.1). This value is **informational only** and is not flagged as an error by `doctor`.
   - `D1010 / D1011 / D1012`: Current, minimum, and maximum scan times measured in **0.1 ms** units (e.g. a value of 4 means 0.4 ms).
+  - `D1121`: PLC communication station address / Slave ID (default `1`).
 - **PLC Ethernet Stack Wedging & WPLSoft:**
   - The Delta DVP Ethernet stack can occasionally hang if flooded or left in half-open states, requiring a physical power cycle of the PLC.
   - If **WPLSoft** is connected or holding an online monitoring session, it may consume the available socket slots. Close WPLSoft before diagnosing driver connectivity issues.
@@ -328,6 +329,16 @@ deltactl doctor
 
 # Active check against a PLC
 deltactl doctor --host 192.168.1.5
+# Output:
+# STATUS  CHECK       DETAIL
+# PASS    interface   Interface enp1s0 has carrier=1 (link up)
+# PASS    address     Target 192.168.1.5 within local subnet (source IP 192.168.1.250)
+# PASS    icmp        3/3 replies, avg 0.25 ms
+# PASS    tcp502      Connected to 192.168.1.5:502 in 0.51 ms
+# PASS    modbus      Read 10 diagnostic tags in 2.99 ms
+# PASS    plc         RUN mode, station ID 1, no faults, scan max 1.3 ms / WDT 200 ms
+# PASS    model       Detected model SE_EH3_SV2 (firmware 0x7C21)
+# verdict: PASS
 
 # Output machine-readable JSON
 deltactl doctor --host 192.168.1.5 --json
