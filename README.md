@@ -24,7 +24,7 @@ Requires **Python ≥ 3.10** and pins `pymodbus>=3.16.1,<4` (Modbus datastore an
 
 ```bash
 # Clone the repository
-git clone https://github.com/deltactl/deltactl.git
+git clone https://github.com/limeskat/deltactl.git
 cd deltactl
 
 # Install in editable mode with development dependencies
