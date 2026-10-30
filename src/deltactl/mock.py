@@ -26,63 +26,22 @@ from pymodbus.server.requesthandler import ServerRequestHandler
 from pymodbus.simulator import DataType, SimData, SimDevice
 
 from .addressing import Device, parse_tag, wire_for
+from .dvp_map import (
+    D_COUNT,
+    D_SEGMENT_SPANS,
+    D_WIRE0,
+    M_COUNT,
+    M_SEGMENT_SPANS,
+    PDU_CAPS,
+    READ_RANGES,
+    WRITE_GUARDS,
+    XY_COUNT,
+    function_code_for,
+)
 
 __all__ = ["MockServer", "MockStats"]
 
 # --------------------------------------------------------------------------- wire map
-
-_D_WIRE0 = 0x1000  # D0-D4095
-_M_WIRE0 = 0x0800  # M0-M1535
-_X_WIRE0 = 0x0400  # X0-X377 (read-only)
-_Y_WIRE0 = 0x0500  # Y0-Y377
-
-_D_COUNT = 12000  # D0-D11999
-_M_COUNT = 4096  # M0-M4095
-_XY_COUNT = 0o400  # X0/Y0-Y377
-
-#: hr block spans as (start, stop, readonly) index ranges: the middle spans are
-#: the bench's read-only system, scan, and fault registers.
-_D_SEGMENT_SPANS: tuple[tuple[int, int, bool], ...] = (
-    (0, 1000, False),
-    (1000, 1003, True),  # D1000-D1002
-    (1003, 1010, False),
-    (1010, 1013, True),  # D1010-D1012
-    (1013, 1067, False),
-    (1067, 1068, True),  # D1067
-    (1068, 4096, False),
-    (4096, 12000, False),
-)
-
-_M_SEGMENT_SPANS: tuple[tuple[int, int, bool], ...] = (
-    (0, 1000, False),
-    (1000, 1004, True),  # M1000-M1003
-    (1004, 1067, False),
-    (1067, 1068, True),  # M1067
-    (1068, 1536, False),
-    (1536, 4096, False),
-)
-
-#: PDU count ceilings a real DVP enforces (FC03/FC16 vs the bit function codes).
-_PDU_CAPS: dict[int, int] = {1: 256, 2: 256, 3: 100, 15: 256, 16: 100}
-
-#: Wire spans that may be read/written; anything else is address 02.
-_READ_RANGES: dict[int, tuple[tuple[int, int], ...]] = {
-    1: ((_M_WIRE0, 0x0DFF), (0xB000, 0xB9FF), (_Y_WIRE0, 0x05FF)),
-    2: ((_X_WIRE0, 0x04FF),),
-    3: ((_D_WIRE0, 0x1FFF), (0x9000, 0xAEDF)),
-    5: ((_M_WIRE0, 0x0DFF), (0xB000, 0xB9FF), (_Y_WIRE0, 0x05FF)),
-    6: ((_D_WIRE0, 0x1FFF), (0x9000, 0xAEDF)),
-    15: ((_M_WIRE0, 0x0DFF), (0xB000, 0xB9FF), (_Y_WIRE0, 0x05FF)),
-    16: ((_D_WIRE0, 0x1FFF), (0x9000, 0xAEDF)),
-}
-
-#: Read-only write guards, in wire space, as inclusive spans; reads are unaffected.
-_WRITE_GUARDS: dict[int, tuple[tuple[int, int], ...]] = {
-    5: ((0x0BE8, 0x0BEB), (0x0C2B, 0x0C2B), (_X_WIRE0, 0x04FF)),
-    15: ((0x0BE8, 0x0BEB), (0x0C2B, 0x0C2B), (_X_WIRE0, 0x04FF)),
-    6: ((0x13E8, 0x13EA), (0x13F2, 0x13F4), (0x142B, 0x142B)),
-    16: ((0x13E8, 0x13EA), (0x13F2, 0x13F4), (0x142B, 0x142B)),
-}
 
 _WRITE_FCS = frozenset({5, 6, 15, 16})
 
@@ -143,7 +102,7 @@ def _make_scan_action(t0: float) -> _SimAction:
         values: list[int] | list[bool] | None,
     ) -> ExcCodes | None:
         del function_code, address, count, values
-        if start_address == _D_WIRE0:
+        if start_address == D_WIRE0:
             scan = _scan_ms(t0)
             registers[_SCAN_REG_INDEX : _SCAN_REG_INDEX + 3] = [scan, scan, scan]
         return None
@@ -160,10 +119,10 @@ def _default_values() -> dict[Device, list[Any]]:
     the zero defaults.
     """
     values: dict[Device, list[Any]] = {
-        Device.D: [0] * _D_COUNT,
-        Device.M: [False] * _M_COUNT,
-        Device.X: [False] * _XY_COUNT,
-        Device.Y: [False] * _XY_COUNT,
+        Device.D: [0] * D_COUNT,
+        Device.M: [False] * M_COUNT,
+        Device.X: [False] * XY_COUNT,
+        Device.Y: [False] * XY_COUNT,
     }
     values[Device.D][1000:1003] = [200, 0x7C21, 15872]  # firmware id
     values[Device.D][1010:1013] = [4, 1, 12]  # scan time
@@ -239,11 +198,11 @@ def _build_device(
             raise ValueError(f"station_id {station_id} out of range 0..65535")
         values[Device.D][1121] = station_id
 
-    co = _segments(Device.M, values[Device.M], _M_SEGMENT_SPANS, DataType.BITS)
-    co += _segments(Device.Y, values[Device.Y], ((0, _XY_COUNT, False),), DataType.BITS)
+    co = _segments(Device.M, values[Device.M], M_SEGMENT_SPANS, DataType.BITS)
+    co += _segments(Device.Y, values[Device.Y], ((0, XY_COUNT, False),), DataType.BITS)
     co.sort(key=lambda entry: entry.address)
-    di = _segments(Device.X, values[Device.X], ((0, _XY_COUNT, True),), DataType.BITS)
-    hr = _segments(Device.D, values[Device.D], _D_SEGMENT_SPANS, DataType.REGISTERS)
+    di = _segments(Device.X, values[Device.X], ((0, XY_COUNT, True),), DataType.BITS)
+    hr = _segments(Device.D, values[Device.D], D_SEGMENT_SPANS, DataType.REGISTERS)
     hr.sort(key=lambda entry: entry.address)
     ir = [SimData(address=0, count=1, datatype=DataType.INVALID)]
 
@@ -286,13 +245,13 @@ class _MockHandler(ServerRequestHandler):
     @staticmethod
     def _reject_code(fc: int, address: int, count: int) -> ExcCodes | None:
         """First reason to refuse the request, exactly as the bench would."""
-        cap = _PDU_CAPS.get(fc)
+        cap = PDU_CAPS.get(fc)
         if cap is not None and count > cap:
             return ExcCodes.ILLEGAL_VALUE
-        ranges = _READ_RANGES.get(fc)
+        ranges = READ_RANGES.get(fc)
         if ranges is not None and not _within(ranges, address, count):
             return ExcCodes.ILLEGAL_ADDRESS
-        guards = _WRITE_GUARDS.get(fc)
+        guards = WRITE_GUARDS.get(fc)
         if guards is not None and _overlaps(guards, address, count):
             return ExcCodes.ILLEGAL_ADDRESS
         return None
@@ -466,3 +425,33 @@ class MockServer:
         self._loop = None
         self._server = None
         self._stop_event.set()
+
+    # -- runtime values ----------------------------------------------------
+
+    def set_values(self, tag: str, value: int | bool) -> None:
+        """Overwrite one mock value in place, bypassing the request path.
+
+        Used by differential tests to seed values without consuming request
+        counters.  The simulator's own read-only flags still refuse the guarded
+        D register spans (D1000-D1002, D1010-D1012, D1067), which stay
+        unchanged; bit guards are not enforced on this direct path.
+        """
+        if not self.running or self._loop is None or self._server is None:
+            raise RuntimeError("mock server is not running")
+        parsed = parse_tag(tag)
+        address = parsed.address
+        if parsed.dtype is not None or address.bit is not None:
+            raise ValueError(f"set_values {tag!r}: use a bare tag without bit or dtype suffix")
+        raw: list[int] | list[bool]
+        if address.device is Device.D:
+            if not isinstance(value, int) or not 0 <= value <= 0xFFFF:
+                raise ValueError(f"set_values {tag!r}: D values must be integers in 0..65535")
+            raw = [int(value)]
+        else:
+            raw = [bool(value)]
+        fc = function_code_for(address.device)
+        future = asyncio.run_coroutine_threadsafe(
+            self._server.context.async_setValues(0, fc, address.wire, raw),
+            self._loop,
+        )
+        future.result(timeout=5)

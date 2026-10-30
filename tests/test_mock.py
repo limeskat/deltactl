@@ -170,3 +170,26 @@ def test_station_id_validation():
         MockServer(port=0, station_id=-1)
     with pytest.raises(ValueError, match="0..65535"):
         MockServer(port=0, station_id=65536)
+
+
+def test_set_values_runtime_update():
+    server = MockServer(port=0)
+    server.start()
+    try:
+        server.set_values("D500", 39)
+        server.set_values("M100", True)
+
+        async def scenario():
+            c = AsyncModbusTcpClient("127.0.0.1", port=server.address[1], timeout=1, retries=0)
+            await c.connect()
+            try:
+                rr = await c.read_holding_registers(0x1000 + 500, count=1, device_id=1)
+                assert rr.registers == [39]
+                rc = await c.read_coils(0x0800 + 100, count=1, device_id=1)
+                assert rc.bits[0] is True
+            finally:
+                c.close()
+
+        asyncio.run(scenario())
+    finally:
+        server.stop()
