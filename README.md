@@ -125,19 +125,18 @@ Delta DVP PLCs encompass 8 commercial series documented in Delta manual `580.htm
 
 Analyzing their physical addressing boundaries reveals that these 8 commercial series collapse into **exactly 5 distinct canonical hardware profiles**:
 
-```
-                          ┌─────────────────────────────┐
-                          │   5 CANONICAL PROFILES      │
-                          └──────────────┬──────────────┘
-                                         │
-     ┌───────────────┬───────────────────┼───────────────────┬───────────────┐
-     ▼               ▼                   ▼                   ▼               ▼
-┌───────────┐ ┌──────────────┐    ┌─────────────┐     ┌─────────────┐ ┌─────────────┐
-│12k Profile│ │ 10k Profile  │    │ 5k Profile  │     │ 5k Profile  │ │Small Profile│
-│ SE_EH3_SV2│ │   ES2_EX2    │    │     SS2     │     │  SA_SX_SC   │ │  ES_EX_SS   │
-└───────────┘ └──────────────┘    └─────────────┘     └─────────────┘ └─────────────┘
-  SE, EH3,      ES2, EX2, SA2,          SS2,              SA, SX,         ES, EX,
-  SV2 models    SX2, EH2, SV        14SS2 models        SC models        SS models
+```mermaid
+flowchart TD
+    C1["ES / EX / SS"] --> P1["<b>ES_EX_SS</b><br/>Small / Legacy"]
+    C2["SA / SX / SC"] --> P2["<b>SA_SX_SC</b><br/>5k words"]
+    C3["EH2 / SV<br/>ES2 / EX2<br/>SA2 / SX2"] --> P3["<b>ES2_EX2</b><br/>10k words"]
+    C4["EH3 / SV2<br/>SE"] --> P4["<b>SE_EH3_SV2</b><br/>12k words"]
+    C5["SS2"] --> P5["<b>SS2</b><br/>5k words"]
+
+    classDef series fill:#e8f0fe,stroke:#4285f4,color:#111
+    classDef profile fill:#e6f4ea,stroke:#34a853,color:#111
+    class C1,C2,C3,C4,C5 series
+    class P1,P2,P3,P4,P5 profile
 ```
 
 ### 1. Canonical Profile Specifications
@@ -168,9 +167,9 @@ You can supply either a canonical profile name or any commercial model alias to 
 | `ES_EX_SS` | `ES`, `DVP_ES`, `EX`, `DVP_EX`, `SS`, `DVP_SS` |
 
 **Alias Normalization Rules:**
-- Strips surrounding whitespace, capitalizes, and replaces hyphens with underscores (`dvp-14ss2` $\to$ `DVP_14SS2`).
-- Strips leading `DVP_` or `DVP` prefixes (`DVP_28SV2` $\to$ `28SV2`).
-- Strict generation hygiene: `SS` $\to$ `ES_EX_SS`, while `SS2` $\to$ `SS2`; `ES` $\to$ `ES_EX_SS`, while `ES2` $\to$ `ES2_EX2`.
+- Strips surrounding whitespace, capitalizes, and replaces hyphens with underscores (`dvp-14ss2` → `DVP_14SS2`).
+- Strips leading `DVP_` or `DVP` prefixes (`DVP_28SV2` → `28SV2`).
+- Strict generation hygiene: `SS` → `ES_EX_SS`, while `SS2` → `SS2`; `ES` → `ES_EX_SS`, while `ES2` → `ES2_EX2`.
 - Any unmapped series name raises `DeltaValueError` (or causes CLI commands to exit with code 2).
 
 ### 3. Automatic Hardware Detection via `D1001`
@@ -210,11 +209,11 @@ To protect field PLCs from unintended commands or improper addressing:
   - If `D1001` returns an unrecognized model code, it raises `UnknownModelCodeError`.
 - **Non-Strict Mode (Default):**
   - If a mismatch occurs, `deltactl` logs a warning and clamps address validation to the **mathematical intersection** of the configured and detected profiles:
-    - $\text{Valid D} = \text{configured.d\_ranges} \cap \text{detected.d\_ranges}$
-    - $\text{Valid M} = \text{configured.m\_ranges} \cap \text{detected.m\_ranges}$
-    - $\text{Max X} = \min(\text{configured.x\_max}, \text{detected.x\_max})$
-    - $\text{Max Y} = \min(\text{configured.y\_max}, \text{detected.y\_max})$
-    - $\text{Guards} = \text{configured.guards} \cup \text{detected.guards}$
+    - `Valid D = configured.d_ranges ∩ detected.d_ranges`
+    - `Valid M = configured.m_ranges ∩ detected.m_ranges`
+    - `Max X = min(configured.x_max, detected.x_max)`
+    - `Max Y = min(configured.y_max, detected.y_max)`
+    - `Guards = configured.guards ∪ detected.guards`
   - Under no circumstance are out-of-bounds Modbus frames transmitted to the PLC.
 
 ### 5. Resolution Precedence Hierarchy
