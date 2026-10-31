@@ -159,6 +159,18 @@ def test_interface_undeterminable_returns_skip(monkeypatch):
         stdout = "192.168.1.50 dev eth0 src 192.168.1.1\n"
 
     monkeypatch.setattr("deltactl.doctor.subprocess.run", lambda *a, **kw: RouteResult())
+
+    # GitHub's Ubuntu runners genuinely have an eth0 with a readable carrier
+    # file, so the sysfs reads must be forced to fail for this to be portable.
+    real_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if str(path).startswith("/sys/class/net/"):
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("deltactl.doctor.open", fake_open, raising=False)
+
     res, dev = _check_interface_sync("192.168.1.50")
     assert dev == "eth0"
     assert res.status == "SKIP"

@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deltactl"
-version = "0.1.0"
+version = "0.2.0"
 description = "Delta DVP PLC driver and CLI over Modbus TCP"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -37,6 +38,7 @@ packages = ["src/deltactl"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 addopts = "--cov=deltactl --cov-branch --cov-report=term-missing"
 
 [tool.coverage.report]
