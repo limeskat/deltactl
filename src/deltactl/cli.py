@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from typing import Any, Literal, overload
 
 from . import __version__
-from .addressing import Device, expand_tags, parse_raw, parse_tag, validate_span
+from .addressing import View, expand_tags, parse_raw, parse_tag, validate_span
 from .client import DeltaPLC
 from .config import clear_config, get_config_path, load_config, resolve_setting, save_config
 from .doctor import DoctorReport, run_doctor
@@ -503,7 +503,7 @@ def _check_dtype_target(
     if dtype is None:
         return
     parsed = parse_tag(text, profile=profile)
-    if parsed.address.device is not Device.D or parsed.address.bit is not None:
+    if parsed.address.view is not View.WORD or parsed.address.bit is not None:
         parser.error(f"--dtype is only valid for D word tags, not {parsed.display}")
 
 
@@ -550,7 +550,7 @@ def _cmd_read(args: argparse.Namespace) -> int:
     single = len(resolved) == 1
     value_count = (count or 1) if single else 1
     for tag in resolved:
-        if tag.dtype is DType.BIT and tag.address.device is Device.D and value_count > 1:
+        if tag.address.bit is not None and value_count > 1:
             raise DeltaValueError(f"{tag.name} is a D word bit; --count is not supported")
         plan_chunks(tag.address, tag.width, value_count, profile=configured_profile)
 
@@ -580,7 +580,7 @@ def _cmd_read(args: argparse.Namespace) -> int:
 def _read_one(plc: DeltaPLC, tag: Tag, count: int) -> list[int | float | bool]:
     """Read *count* values for one resolved tag, always as a list."""
     if tag.dtype is DType.BIT:
-        if tag.address.device is Device.D:
+        if tag.address.bit is not None:
             return [bool(plc.read(tag.name))]
         bits = plc.read_bits(tag.name, count)
         res_bits: list[int | float | bool] = list(bits) if isinstance(bits, list) else [bits]
@@ -667,10 +667,10 @@ def _cmd_write(args: argparse.Namespace) -> int:
     explicit = dtype is not None or ":" in tag_text
     count = len(value_texts)
 
-    if tag.dtype is DType.BIT and tag.address.device is Device.D and count > 1:
+    if tag.address.bit is not None and count > 1:
         raise DeltaValueError(f"{tag.name} is a D word bit: exactly one value is required")
 
-    total = count * tag.width if tag.address.device is Device.D else count
+    total = count * tag.width if tag.address.view is View.WORD else count
     validate_span(
         tag.address,
         total,
@@ -745,7 +745,7 @@ def _perform_write(
     """Send a pre-validated write through the appropriate client method."""
     payload: Any = values[0] if len(values) == 1 else list(values)
     if tag.dtype is DType.BIT:
-        if tag.address.device is Device.D:
+        if tag.address.bit is not None:
             plc.write(tag.name, values[0])
         else:
             plc.write_bits(tag.name, payload)
@@ -770,7 +770,7 @@ def _plan_frames(
     profile: SeriesProfile | None = None,
 ) -> list[dict[str, Any]]:
     """Build the dry-run frame list for a pre-validated, pre-encoded write."""
-    if tag.dtype is DType.BIT and tag.address.device is Device.D:
+    if tag.address.bit is not None:
         # A word-bit write is a read-modify-write in the driver; show the write leg.
         return [_frame(6, tag.address.wire, 1, [int(bool(encoded[0]))])]
     frames: list[dict[str, Any]] = []

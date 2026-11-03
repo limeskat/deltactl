@@ -25,7 +25,7 @@ from pymodbus.server import ModbusTcpServer
 from pymodbus.server.requesthandler import ServerRequestHandler
 from pymodbus.simulator import DataType, SimData, SimDevice
 
-from .addressing import Device, parse_tag, wire_for
+from .addressing import Device, View, parse_tag, wire_for
 from .dvp_map import (
     D_COUNT,
     D_SEGMENT_SPANS,
@@ -139,7 +139,7 @@ def _overlay_seed(values: dict[Device, list[Any]], seed: Mapping[str, int | bool
         address = parsed.address
         if parsed.dtype is not None or address.bit is not None:
             raise ValueError(f"seed {key!r}: use a bare tag without bit or dtype suffix")
-        if address.device is Device.D:
+        if address.view is View.WORD:
             if not isinstance(value, int) or not 0 <= value <= 0xFFFF:
                 raise ValueError(f"seed {key!r}: D values must be integers in 0..65535")
         elif not isinstance(value, bool):
@@ -443,7 +443,7 @@ class MockServer:
         if parsed.dtype is not None or address.bit is not None:
             raise ValueError(f"set_values {tag!r}: use a bare tag without bit or dtype suffix")
         raw: list[int] | list[bool]
-        if address.device is Device.D:
+        if address.view is View.WORD:
             if not isinstance(value, int) or not 0 <= value <= 0xFFFF:
                 raise ValueError(f"set_values {tag!r}: D values must be integers in 0..65535")
             raw = [int(value)]

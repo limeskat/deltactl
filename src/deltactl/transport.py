@@ -24,7 +24,7 @@ from typing import Any
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ConnectionException, ModbusException, ModbusIOException
 
-from .addressing import Address, Device, parse_raw, validate_span
+from .addressing import Address, View, parse_raw, validate_span
 from .errors import (
     DeltaConnectionError,
     DeltaModbusException,
@@ -57,14 +57,6 @@ from .profiles import (
 )
 
 __all__ = ["AsyncDeltaPLC", "GroupResult", "decode_group_values"]
-
-#: Modbus read function per Delta device. X and Y are bit devices like M.
-_FUNCTION_FOR: dict[Device, int] = {
-    Device.D: 3,  # holding registers
-    Device.X: 2,  # discrete inputs
-    Device.Y: 1,  # coils
-    Device.M: 1,  # coils
-}
 
 #: pymodbus method name per read function code.
 _METHOD_FOR: dict[int, str] = {
@@ -118,15 +110,15 @@ def decode_group_values(
 ) -> dict[str, int | float | bool]:
     """Decode one group's raw response into ``{tag.name: value}``.
 
-    Preserves ``group.tags`` order. D bit tags read their bit out of the word
-    at their offset; M/X/Y bit tags take the wire bit; every other tag decodes
+    Preserves ``group.tags`` order. Word bit tags read their bit out of the word
+    at their offset; bit-view tags take the wire bit; every other tag decodes
     ``tag.width`` registers starting at its offset.
     """
     values: dict[str, int | float | bool] = {}
     for tag in group.tags:
         offset = tag.address.wire - group.start
         if tag.dtype is DType.BIT:
-            if tag.address.device is Device.D:
+            if tag.address.bit is not None:
                 bit = tag.address.bit
                 assert bit is not None
                 values[tag.name] = get_bit(registers[offset], bit)
@@ -135,11 +127,6 @@ def decode_group_values(
         else:
             values[tag.name] = decode_value(registers[offset : offset + tag.width], tag.dtype)
     return values
-
-
-def _function_for(tag: Tag) -> int:
-    """Read function code for *tag*'s device."""
-    return _FUNCTION_FOR[tag.address.device]
 
 
 def _as_bit(value: Any) -> bool:
@@ -482,12 +469,12 @@ class AsyncDeltaPLC:
         return await self._read_typed(tag, DType.F32, count)
 
     async def read_bits(self, tag: str, count: int = 1) -> bool | list[bool]:
-        """Read *count* M/X/Y wire bits (scalar when ``count == 1``)."""
+        """Read *count* bit-view wire bits (scalar when ``count == 1``)."""
         await self._ensure_connected()
         parsed = make_tag(tag, DType.BIT, profile=self.effective_profile)
-        if parsed.address.device is Device.D:
+        if parsed.address.view is not View.BIT:
             raise DeltaValueError(
-                f"read_bits supports only M/X/Y tags; read {tag!r} as a word bit "
+                f"read_bits supports only bit-view tags; read {tag!r} as a word bit "
                 "with read('D<n>.<bit>') instead"
             )
         bits = await self._read_wire_bits(parsed, count)
@@ -588,12 +575,12 @@ class AsyncDeltaPLC:
         await self._write_typed(tag, DType.F32, value)
 
     async def write_bits(self, tag: str, value: Any) -> None:
-        """Write one or more M/X/Y wire bits; D tags raise ``DeltaValueError``."""
+        """Write one or more bit-view wire bits; word tags raise ``DeltaValueError``."""
         await self._ensure_connected()
         parsed = make_tag(tag, DType.BIT, profile=self.effective_profile)
-        if parsed.address.device is Device.D:
+        if parsed.address.view is not View.BIT:
             raise DeltaValueError(
-                f"write_bits supports only M/X/Y tags; write {tag!r} as a word bit "
+                f"write_bits supports only bit-view tags; write {tag!r} as a word bit "
                 "with write('D<n>.<bit>', value) instead"
             )
         await self._guard_and_write(parsed, _wire_bits(value))
@@ -611,7 +598,7 @@ class AsyncDeltaPLC:
         parsed = make_tag(tag, profile=self.effective_profile)
         values: list[Any]
         if parsed.dtype is DType.BIT:
-            if parsed.address.device is Device.D:
+            if parsed.address.bit is not None:
                 values = [_as_bit(value)]
             else:
                 values = _wire_bits(value)
@@ -638,7 +625,7 @@ class AsyncDeltaPLC:
             raise DeltaValueError("write requires at least one value")
         bit_like = tag.dtype is DType.BIT
         count = len(values) if bit_like else len(values) // tag.width
-        total = count * tag.width if tag.address.device is Device.D else count
+        total = count * tag.width if tag.address.view is View.WORD else count
         validate_span(
             tag.address,
             total,
@@ -659,9 +646,9 @@ class AsyncDeltaPLC:
         before any PDU and bulk writes split into whole-value chunks.
         """
         address = tag.address
-        if address.device is Device.D and tag.dtype is DType.BIT:
+        if address.bit is not None:
             await self._write_word_bit_locked(address, bool(values[0]))
-        elif address.device is Device.D:
+        elif address.view is View.WORD:
             chunks = plan_chunks(
                 address,
                 tag.width,
@@ -789,12 +776,12 @@ class AsyncDeltaPLC:
         return values[0] if count == 1 else values
 
     async def _read_bit(self, tag: Tag) -> bool:
-        """Locked read of one bit: a D word bit or an M/X/Y wire bit."""
+        """Locked read of one bit: a word bit or a bit-view wire bit."""
         async with self._lock:
             await self._ensure_connected_locked()
-            group = ReadGroup(_function_for(tag), tag.address.wire, 1, ())
+            group = ReadGroup(tag.address.function, tag.address.wire, 1, ())
             registers, bits, _ = await self._read_group_locked(group, self.read_retries)
-        if tag.address.device is Device.D:
+        if tag.address.bit is not None:
             bit = tag.address.bit
             assert bit is not None
             return get_bit(registers[0], bit)
@@ -811,7 +798,7 @@ class AsyncDeltaPLC:
             max_bits=self.max_read_bits,
             profile=self.effective_profile,
         )
-        function = _function_for(tag)
+        function = tag.address.function
         values: list[int | float] = []
         async with self._lock:
             await self._ensure_connected_locked()
@@ -822,7 +809,7 @@ class AsyncDeltaPLC:
         return values
 
     async def _read_wire_bits(self, tag: Tag, count: int) -> list[bool]:
-        """Locked read of *count* M/X/Y wire bits, chunked across PDUs."""
+        """Locked read of *count* bit-view wire bits, chunked across PDUs."""
         await self._ensure_connected()
         chunks = plan_chunks(
             tag.address,
@@ -832,7 +819,7 @@ class AsyncDeltaPLC:
             max_bits=self.max_read_bits,
             profile=self.effective_profile,
         )
-        function = _function_for(tag)
+        function = tag.address.function
         out: list[bool] = []
         async with self._lock:
             await self._ensure_connected_locked()

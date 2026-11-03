@@ -11,7 +11,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .addressing import Address, Device, TagAddress, block_for, parse_tag, validate_span, wire_for
+from .addressing import (
+    Address,
+    TagAddress,
+    View,
+    block_for,
+    parse_tag,
+    validate_span,
+    wire_for,
+)
 from .errors import BlockBoundaryError, DeltaValueError
 from .packing import DType
 from .profiles import DEFAULT_PROFILE, SeriesProfile
@@ -26,15 +34,6 @@ __all__ = [
     "plan_reads",
 ]
 
-# Modbus read function per device: holding registers (D), discrete inputs (X),
-# coils (M/Y). Partitions are returned in this deterministic order.
-_FUNCTIONS: dict[Device, tuple[int, bool]] = {
-    # device: (function code, count_in_registers?)
-    Device.D: (3, True),
-    Device.X: (2, False),
-    Device.Y: (1, False),
-    Device.M: (1, False),
-}
 _PARTITION_ORDER = (3, 2, 1)
 
 
@@ -93,7 +92,7 @@ def make_tag(
     resolved_dtype = dtype if dtype is not None else default_dtype
     parsed = parse_tag(text, profile=prof)
     address = parsed.address
-    bit_like = address.bit is not None or address.device is not Device.D
+    bit_like = address.bit is not None or address.view is View.BIT
     inline = DType(parsed.dtype) if parsed.dtype is not None else None
     if bit_like:
         if resolved_dtype is not None and resolved_dtype is not DType.BIT:
@@ -144,7 +143,7 @@ def plan_reads(
     # (wire start, wire end, input order, tag) per function code.
     intervals: dict[int, list[tuple[int, int, int, Tag]]] = {}
     for order, tag in enumerate(tags):
-        function, _ = _FUNCTIONS[tag.address.device]
+        function = tag.address.function
         start = tag.address.wire
         intervals.setdefault(function, []).append((start, start + tag.width, order, tag))
 
@@ -156,9 +155,8 @@ def plan_reads(
         )
         if not items:
             continue
-        device = items[0][3].address.device
-        register_count = _FUNCTIONS[device][1]
-        cap = max_registers if register_count else max_bits
+        first_tag_addr = items[0][3].address
+        cap = max_registers if first_tag_addr.view is View.WORD else max_bits
 
         chunk: list[tuple[int, int, int, Tag]] = []
         group_start = 0
@@ -240,9 +238,9 @@ def plan_chunks(
 
     prof = profile or DEFAULT_PROFILE
     device = addr.device
-    total = value_count * value_width if device is Device.D else value_count
+    total = value_count * value_width if addr.view is View.WORD else value_count
     validate_span(addr, total, write=False, allow_block_crossing=True, profile=prof)
-    cap = max_registers if device is Device.D else max_bits
+    cap = max_registers if addr.view is View.WORD else max_bits
 
     chunks: list[Chunk] = []
     first = 0
