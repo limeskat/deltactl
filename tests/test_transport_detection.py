@@ -18,6 +18,8 @@ from deltactl.profiles import (
     DEFAULT_PROFILE,
     PROFILE_SE_EH3_SV2,
     PROFILE_SS2,
+    Device,
+    View,
 )
 from deltactl.transport import AsyncDeltaPLC
 
@@ -188,7 +190,10 @@ async def test_non_strict_mismatch_clamps_to_intersection(mock_ss2):
         "127.0.0.1", port=mock_ss2.address[1], series="SE", strict_series=False
     ) as plc:
         assert plc.detected_profile == PROFILE_SS2
-        assert plc.effective_profile.d_ranges == ((0, 4999),)
+        assert (
+            plc.effective_profile.devices[Device.D].views[View.WORD].segments[-1].last
+            == 4999
+        )
         # Reading D4999 succeeds
         await plc.read("D4999")
         # Reading D5000 is blocked client-side by effective profile

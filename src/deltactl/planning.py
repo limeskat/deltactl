@@ -244,12 +244,6 @@ def plan_chunks(
     validate_span(addr, total, write=False, allow_block_crossing=True, profile=prof)
     cap = max_registers if device is Device.D else max_bits
 
-    split_boundary: int | None = None
-    if device is Device.D:
-        split_boundary = prof.d_split_boundary
-    elif device is Device.M:
-        split_boundary = prof.m_split_boundary
-
     chunks: list[Chunk] = []
     first = 0
     values = 0
@@ -258,8 +252,12 @@ def plan_chunks(
         low = addr.index + i * value_width
         high = low + value_width - 1
         value_block = block_for(device, low, profile=prof)
-        if split_boundary is not None and value_block != block_for(device, high, profile=prof):
-            split = split_boundary + 1
+        if value_block != block_for(device, high, profile=prof):
+            split = next(
+                idx
+                for idx in range(low + 1, high + 1)
+                if block_for(device, idx, profile=prof) != value_block
+            )
             raise BlockBoundaryError(
                 f"value {i} at {device.value}{low} spanning {value_width} "
                 f"crosses the {device.value}{split - 1}|{device.value}{split} "

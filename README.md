@@ -209,10 +209,9 @@ To protect field PLCs from unintended commands or improper addressing:
   - If `D1001` returns an unrecognized model code, it raises `UnknownModelCodeError`.
 - **Non-Strict Mode (Default):**
   - If a mismatch occurs, `deltactl` logs a warning and clamps address validation to the **mathematical intersection** of the configured and detected profiles:
-    - `Valid D = configured.d_ranges ∩ detected.d_ranges`
-    - `Valid M = configured.m_ranges ∩ detected.m_ranges`
-    - `Max X = min(configured.x_max, detected.x_max)`
-    - `Max Y = min(configured.y_max, detected.y_max)`
+    - `Valid D = configured.devices[D] ∩ detected.devices[D]`, likewise M, X, Y
+    - Segments merge only when they share the same wire mapping
+    - `Writable = configured.writable ∧ detected.writable`
     - `Guards = configured.guards ∪ detected.guards`
   - Under no circumstance are out-of-bounds Modbus frames transmitted to the PLC.
 

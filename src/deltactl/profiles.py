@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 
@@ -101,23 +101,18 @@ DEVICE_VIEWS: Mapping[Device, tuple[View, ...]] = MappingProxyType(
 
 @dataclass(frozen=True)
 class SeriesProfile:
-    """Hardware profile specifying address limits and wire boundaries."""
+    """Hardware profile: a name, its aliases, and the device address specs.
+
+    The ``devices`` mapping is the single source of truth for every device's
+    segments, wire anchors, guards, and write access.  Profiles are
+    intentionally unhashable: ``devices`` is a mutable mapping and therefore
+    cannot participate in ``__hash__``.  Compare profiles with ``==`` instead
+    of using them as set members or dict keys.
+    """
 
     name: str
     aliases: tuple[str, ...]
-    d_ranges: tuple[tuple[int, int], ...]
-    d_split_boundary: int | None
-    m_ranges: tuple[tuple[int, int], ...]
-    m_split_boundary: int | None
-    x_max_octal: int
-    y_max_octal: int
-    guarded_d: tuple[tuple[int, int], ...]
-    guarded_m: tuple[tuple[int, int], ...]
-    devices: Mapping[Device, DeviceSpec] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if not self.devices:
-            object.__setattr__(self, "devices", _devices_from_flat(self))
+    devices: Mapping[Device, DeviceSpec]
 
 
 def _split_segments(
@@ -139,66 +134,48 @@ def _split_segments(
     return tuple(out)
 
 
-def _devices_from_flat(profile: SeriesProfile) -> Mapping[Device, DeviceSpec]:
-    """Build the device specs from the profile's flat range/wire fields."""
+def _d_spec(
+    ranges: tuple[tuple[int, int], ...],
+    split: int | None,
+    guards: tuple[tuple[int, int], ...],
+) -> ViewSpec:
+    """D word view (FC03): ranges split at ``split`` onto the 0x1000/0x9000 blocks."""
+    return ViewSpec(3, True, _split_segments(ranges, split, 0x1000, 0x9000), guards)
+
+
+def _m_spec(
+    ranges: tuple[tuple[int, int], ...],
+    split: int | None,
+    guards: tuple[tuple[int, int], ...],
+) -> ViewSpec:
+    """M bit view (FC01): ranges split at ``split`` onto the 0x0800/0xB000 blocks."""
+    return ViewSpec(1, True, _split_segments(ranges, split, 0x0800, 0xB000), guards)
+
+
+def _x_spec(max_octal: int) -> ViewSpec:
+    """X bit view (FC02): read-only, one contiguous 0x0400 block."""
+    return ViewSpec(2, False, (Segment(0, max_octal, 0x0400),))
+
+
+def _y_spec(max_octal: int) -> ViewSpec:
+    """Y bit view (FC01): writable, one contiguous 0x0500 block."""
+    return ViewSpec(1, True, (Segment(0, max_octal, 0x0500),))
+
+
+def _devices(
+    *,
+    d: ViewSpec,
+    m: ViewSpec,
+    x: ViewSpec,
+    y: ViewSpec,
+) -> Mapping[Device, DeviceSpec]:
+    """Assemble a read-only device mapping from each device's single view."""
     return MappingProxyType(
         {
-            Device.D: DeviceSpec(
-                MappingProxyType(
-                    {
-                        View.WORD: ViewSpec(
-                            3,
-                            True,
-                            _split_segments(
-                                profile.d_ranges,
-                                profile.d_split_boundary,
-                                0x1000,
-                                0x9000,
-                            ),
-                            profile.guarded_d,
-                        )
-                    }
-                )
-            ),
-            Device.M: DeviceSpec(
-                MappingProxyType(
-                    {
-                        View.BIT: ViewSpec(
-                            1,
-                            True,
-                            _split_segments(
-                                profile.m_ranges,
-                                profile.m_split_boundary,
-                                0x0800,
-                                0xB000,
-                            ),
-                            profile.guarded_m,
-                        )
-                    }
-                )
-            ),
-            Device.X: DeviceSpec(
-                MappingProxyType(
-                    {
-                        View.BIT: ViewSpec(
-                            2,
-                            False,
-                            (Segment(0, profile.x_max_octal, 0x0400),),
-                        )
-                    }
-                )
-            ),
-            Device.Y: DeviceSpec(
-                MappingProxyType(
-                    {
-                        View.BIT: ViewSpec(
-                            1,
-                            True,
-                            (Segment(0, profile.y_max_octal, 0x0500),),
-                        )
-                    }
-                )
-            ),
+            Device.D: DeviceSpec(MappingProxyType({View.WORD: d})),
+            Device.M: DeviceSpec(MappingProxyType({View.BIT: m})),
+            Device.X: DeviceSpec(MappingProxyType({View.BIT: x})),
+            Device.Y: DeviceSpec(MappingProxyType({View.BIT: y})),
         }
     )
 
@@ -228,14 +205,12 @@ PROFILE_SE_EH3_SV2 = SeriesProfile(
         "DVP_28SV2",
         "DVP_SE",
     ),
-    d_ranges=((0, 11999),),
-    d_split_boundary=4095,
-    m_ranges=((0, 4095),),
-    m_split_boundary=1535,
-    x_max_octal=0o377,
-    y_max_octal=0o377,
-    guarded_d=_DEFAULT_GUARDED_D,
-    guarded_m=_DEFAULT_GUARDED_M,
+    devices=_devices(
+        d=_d_spec(((0, 11999),), 4095, _DEFAULT_GUARDED_D),
+        m=_m_spec(((0, 4095),), 1535, _DEFAULT_GUARDED_M),
+        x=_x_spec(0o377),
+        y=_y_spec(0o377),
+    ),
 )
 
 PROFILE_ES2_EX2 = SeriesProfile(
@@ -257,14 +232,12 @@ PROFILE_ES2_EX2 = SeriesProfile(
         "28SV",
         "DVP_28SV",
     ),
-    d_ranges=((0, 9999),),
-    d_split_boundary=4095,
-    m_ranges=((0, 4095),),
-    m_split_boundary=1535,
-    x_max_octal=0o377,
-    y_max_octal=0o377,
-    guarded_d=_DEFAULT_GUARDED_D,
-    guarded_m=_DEFAULT_GUARDED_M,
+    devices=_devices(
+        d=_d_spec(((0, 9999),), 4095, _DEFAULT_GUARDED_D),
+        m=_m_spec(((0, 4095),), 1535, _DEFAULT_GUARDED_M),
+        x=_x_spec(0o377),
+        y=_y_spec(0o377),
+    ),
 )
 
 PROFILE_SS2 = SeriesProfile(
@@ -275,14 +248,12 @@ PROFILE_SS2 = SeriesProfile(
         "DVP_SS2",
         "DVP_14SS2",
     ),
-    d_ranges=((0, 4999),),
-    d_split_boundary=4095,
-    m_ranges=((0, 4095),),
-    m_split_boundary=1535,
-    x_max_octal=0o377,
-    y_max_octal=0o377,
-    guarded_d=_DEFAULT_GUARDED_D,
-    guarded_m=_DEFAULT_GUARDED_M,
+    devices=_devices(
+        d=_d_spec(((0, 4999),), 4095, _DEFAULT_GUARDED_D),
+        m=_m_spec(((0, 4095),), 1535, _DEFAULT_GUARDED_M),
+        x=_x_spec(0o377),
+        y=_y_spec(0o377),
+    ),
 )
 
 PROFILE_SA_SX_SC = SeriesProfile(
@@ -295,14 +266,12 @@ PROFILE_SA_SX_SC = SeriesProfile(
         "SC",
         "DVP_SC",
     ),
-    d_ranges=((0, 4999),),
-    d_split_boundary=4095,
-    m_ranges=((0, 4095),),
-    m_split_boundary=1535,
-    x_max_octal=0o177,
-    y_max_octal=0o177,
-    guarded_d=_DEFAULT_GUARDED_D,
-    guarded_m=_DEFAULT_GUARDED_M,
+    devices=_devices(
+        d=_d_spec(((0, 4999),), 4095, _DEFAULT_GUARDED_D),
+        m=_m_spec(((0, 4095),), 1535, _DEFAULT_GUARDED_M),
+        x=_x_spec(0o177),
+        y=_y_spec(0o177),
+    ),
 )
 
 PROFILE_ES_EX_SS = SeriesProfile(
@@ -315,14 +284,12 @@ PROFILE_ES_EX_SS = SeriesProfile(
         "SS",
         "DVP_SS",
     ),
-    d_ranges=((0, 599), (1000, 1311)),
-    d_split_boundary=None,
-    m_ranges=((0, 1279),),
-    m_split_boundary=None,
-    x_max_octal=0o177,
-    y_max_octal=0o177,
-    guarded_d=_DEFAULT_GUARDED_D,
-    guarded_m=_DEFAULT_GUARDED_M,
+    devices=_devices(
+        d=_d_spec(((0, 599), (1000, 1311)), None, _DEFAULT_GUARDED_D),
+        m=_m_spec(((0, 1279),), None, _DEFAULT_GUARDED_M),
+        x=_x_spec(0o177),
+        y=_y_spec(0o177),
+    ),
 )
 
 DEFAULT_PROFILE: SeriesProfile = PROFILE_SE_EH3_SV2
@@ -411,21 +378,6 @@ def decode_d1001(raw: int) -> tuple[SeriesProfile, int]:
     return profile, firmware_byte
 
 
-def _intersect_ranges(
-    r1: tuple[tuple[int, int], ...],
-    r2: tuple[tuple[int, int], ...],
-) -> tuple[tuple[int, int], ...]:
-    result: list[tuple[int, int]] = []
-    for s1, e1 in r1:
-        for s2, e2 in r2:
-            start = max(s1, s2)
-            end = min(e1, e2)
-            if start <= end:
-                result.append((start, end))
-    result.sort()
-    return tuple(result)
-
-
 def _union_ranges(
     r1: tuple[tuple[int, int], ...],
     r2: tuple[tuple[int, int], ...],
@@ -441,17 +393,6 @@ def _union_ranges(
         else:
             merged.append((start, end))
     return tuple(merged)
-
-
-def _resolve_split_boundary(
-    b1: int | None,
-    b2: int | None,
-    valid_ranges: tuple[tuple[int, int], ...],
-) -> int | None:
-    candidate = min(b1, b2) if b1 is not None and b2 is not None else (b1 if b1 is not None else b2)
-    if candidate is not None and any(start <= candidate <= end for start, end in valid_ranges):
-        return candidate
-    return None
 
 
 def _segment_key(segment: Segment, function: int) -> tuple[object, ...]:
@@ -542,25 +483,11 @@ def intersect_profiles(a: SeriesProfile, b: SeriesProfile) -> SeriesProfile:
     Matching pairs intersect their index ranges; guards are unioned and a view
     is writable only if both profiles allow writes.
 
-    The legacy flat fields are still computed until callers migrate to
-    ``devices``; they are passed explicitly so ``__post_init__`` does not
-    rebuild the device specs from them.
+    A device or view with no surviving segment is dropped, never repopulated,
+    so intersecting disjoint profiles yields an empty ``devices`` mapping.
     """
-    d_ranges = _intersect_ranges(a.d_ranges, b.d_ranges)
-    m_ranges = _intersect_ranges(a.m_ranges, b.m_ranges)
-    d_split_boundary = _resolve_split_boundary(a.d_split_boundary, b.d_split_boundary, d_ranges)
-    m_split_boundary = _resolve_split_boundary(a.m_split_boundary, b.m_split_boundary, m_ranges)
-
     return SeriesProfile(
         name=f"{a.name}&{b.name}",
         aliases=(),
-        d_ranges=d_ranges,
-        d_split_boundary=d_split_boundary,
-        m_ranges=m_ranges,
-        m_split_boundary=m_split_boundary,
-        x_max_octal=min(a.x_max_octal, b.x_max_octal),
-        y_max_octal=min(a.y_max_octal, b.y_max_octal),
-        guarded_d=_union_ranges(a.guarded_d, b.guarded_d),
-        guarded_m=_union_ranges(a.guarded_m, b.guarded_m),
         devices=_intersect_devices(a.devices, b.devices),
     )

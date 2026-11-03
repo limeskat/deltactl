@@ -24,20 +24,34 @@ from deltactl.profiles import (
 )
 
 
+def _segments(profile: SeriesProfile, device: Device) -> tuple[Segment, ...]:
+    return profile.devices[device].views[DEVICE_VIEWS[device][0]].segments
+
+
 def test_canonical_profiles_exist():
     assert DEFAULT_PROFILE == PROFILE_SE_EH3_SV2
-    assert PROFILE_SE_EH3_SV2.d_ranges == ((0, 11999),)
-    assert PROFILE_SE_EH3_SV2.d_split_boundary == 4095
-    assert PROFILE_ES2_EX2.d_ranges == ((0, 9999),)
-    assert PROFILE_SS2.d_ranges == ((0, 4999),)
-    assert PROFILE_SS2.d_split_boundary == 4095
-    assert PROFILE_SA_SX_SC.d_ranges == ((0, 4999),)
-    assert PROFILE_SA_SX_SC.d_split_boundary == 4095
-    assert PROFILE_SA_SX_SC.x_max_octal == 0o177
-    assert PROFILE_ES_EX_SS.d_ranges == ((0, 599), (1000, 1311))
-    assert PROFILE_ES_EX_SS.d_split_boundary is None
-    assert PROFILE_ES_EX_SS.m_ranges == ((0, 1279),)
-    assert PROFILE_ES_EX_SS.m_split_boundary is None
+    assert _segments(PROFILE_SE_EH3_SV2, Device.D) == (
+        Segment(0, 4095, 0x1000),
+        Segment(4096, 11999, 0x9000),
+    )
+    assert _segments(PROFILE_ES2_EX2, Device.D) == (
+        Segment(0, 4095, 0x1000),
+        Segment(4096, 9999, 0x9000),
+    )
+    assert _segments(PROFILE_SS2, Device.D) == (
+        Segment(0, 4095, 0x1000),
+        Segment(4096, 4999, 0x9000),
+    )
+    assert _segments(PROFILE_SA_SX_SC, Device.D) == (
+        Segment(0, 4095, 0x1000),
+        Segment(4096, 4999, 0x9000),
+    )
+    assert _segments(PROFILE_SA_SX_SC, Device.X) == (Segment(0, 0o177, 0x0400),)
+    assert _segments(PROFILE_ES_EX_SS, Device.D) == (
+        Segment(0, 599, 0x1000),
+        Segment(1000, 1311, 0x13E8),
+    )
+    assert _segments(PROFILE_ES_EX_SS, Device.M) == (Segment(0, 1279, 0x0800),)
 
 
 def test_alias_normalization_and_hygiene():
@@ -89,15 +103,20 @@ def test_d1001_unknown_codes():
 
 def test_intersect_profiles():
     inter = intersect_profiles(PROFILE_SE_EH3_SV2, PROFILE_SS2)
-    assert inter.d_ranges == ((0, 4999),)
-    assert inter.d_split_boundary == 4095
-    assert inter.x_max_octal == 0o377
+    assert _segments(inter, Device.D) == (
+        Segment(0, 4095, 0x1000),
+        Segment(4096, 4999, 0x9000),
+    )
+    assert _segments(inter, Device.X) == (Segment(0, 0o377, 0x0400),)
     incompat = intersect_profiles(PROFILE_SA_SX_SC, PROFILE_ES_EX_SS)
-    assert incompat.d_ranges == ((0, 599), (1000, 1311))
-    assert incompat.x_max_octal == 0o177
+    assert _segments(incompat, Device.D) == (
+        Segment(0, 599, 0x1000),
+        Segment(1000, 1311, 0x13E8),
+    )
+    assert _segments(incompat, Device.X) == (Segment(0, 0o177, 0x0400),)
 
 
-def test_default_profile_devices_from_flat_fields():
+def test_default_profile_device_specs():
     p = PROFILE_SE_EH3_SV2
     d = p.devices[Device.D].views[View.WORD]
     assert d.function == 3 and d.writable is True
@@ -111,6 +130,7 @@ def test_default_profile_devices_from_flat_fields():
         (0, 1535, 0x0800),
         (1536, 4095, 0xB000),
     ]
+    assert m.guards == ((1000, 1003), (1067, 1067))
     assert p.devices[Device.X].views[View.BIT].writable is False
     assert p.devices[Device.Y].views[View.BIT].writable is True
 
@@ -141,14 +161,6 @@ def _stepped_profile(name: str, *, step: int, x_writable: bool) -> SeriesProfile
     return SeriesProfile(
         name=name,
         aliases=(),
-        d_ranges=((0, 9),),
-        d_split_boundary=None,
-        m_ranges=((0, 9),),
-        m_split_boundary=None,
-        x_max_octal=0o7,
-        y_max_octal=0o7,
-        guarded_d=((1, 2),),
-        guarded_m=(),
         devices=MappingProxyType(
             {
                 Device.D: DeviceSpec(
@@ -170,7 +182,7 @@ def _stepped_profile(name: str, *, step: int, x_writable: bool) -> SeriesProfile
     )
 
 
-def test_intersection_uses_segments_not_flat_fields():
+def test_intersection_uses_segment_wire_keys():
     p = intersect_profiles(
         _stepped_profile("a", step=2, x_writable=True),
         _stepped_profile("b", step=2, x_writable=False),
@@ -178,3 +190,38 @@ def test_intersection_uses_segments_not_flat_fields():
     assert p.devices[Device.D].views[View.WORD].segments == (Segment(0, 9, 0x1000, step=2),)
     assert p.devices[Device.D].views[View.WORD].guards == ((1, 2),)
     assert p.devices[Device.X].views[View.BIT].writable is False
+
+
+def _d_only_profile(name: str, first: int, last: int) -> SeriesProfile:
+    """Synthetic profile with one D segment anchored like the real 0x1000 block."""
+    return SeriesProfile(
+        name=name,
+        aliases=(),
+        devices=MappingProxyType(
+            {
+                Device.D: DeviceSpec(
+                    MappingProxyType(
+                        {
+                            View.WORD: ViewSpec(
+                                3,
+                                True,
+                                (Segment(first, last, 0x1000 + first),),
+                            )
+                        }
+                    )
+                )
+            }
+        ),
+    )
+
+
+def test_empty_intersection_stays_empty():
+    # Disjoint D index ranges sharing a wire-mapping key: no segment survives,
+    # so the result must keep an empty devices mapping instead of resurrecting
+    # a default or unioned range.
+    left = _d_only_profile("left", 0, 9)
+    right = _d_only_profile("right", 20, 29)
+    for a, b in ((left, right), (right, left)):
+        result = intersect_profiles(a, b)
+        assert result.devices == {}
+        assert Device.D not in result.devices

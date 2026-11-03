@@ -42,16 +42,6 @@ __all__ = [
 ]
 
 
-_D_SPLIT = 4096  # D0–D4095 is block 0; D4096–D11999 is block 1
-_M_SPLIT = 1536  # M0–M1535 is block 0; M1536–M4095 is block 1
-
-_MAX_INDEX: dict[Device, int] = {
-    Device.D: 11999,
-    Device.M: 4095,
-    Device.X: 0o377,
-    Device.Y: 0o377,
-}
-
 _OCTAL_DEVICES = frozenset({Device.X, Device.Y})
 
 # Read-only guard tuples as inclusive index ranges; enforced over the whole
