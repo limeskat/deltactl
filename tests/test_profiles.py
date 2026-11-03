@@ -4,11 +4,14 @@ import pytest
 from deltactl.errors import DeltaValueError, UnknownModelCodeError
 from deltactl.profiles import (
     DEFAULT_PROFILE,
+    DEVICE_VIEWS,
     PROFILE_ES2_EX2,
     PROFILE_ES_EX_SS,
     PROFILE_SA_SX_SC,
     PROFILE_SE_EH3_SV2,
     PROFILE_SS2,
+    Device,
+    View,
     decode_d1001,
     get_profile,
     intersect_profiles,
@@ -86,3 +89,28 @@ def test_intersect_profiles():
     incompat = intersect_profiles(PROFILE_SA_SX_SC, PROFILE_ES_EX_SS)
     assert incompat.d_ranges == ((0, 599), (1000, 1311))
     assert incompat.x_max_octal == 0o177
+
+
+def test_default_profile_devices_from_flat_fields():
+    p = PROFILE_SE_EH3_SV2
+    d = p.devices[Device.D].views[View.WORD]
+    assert d.function == 3 and d.writable is True
+    assert [(s.first, s.last, s.wire, s.step) for s in d.segments] == [
+        (0, 4095, 0x1000, 1),
+        (4096, 11999, 0x9000, 1),
+    ]
+    assert d.guards == ((1000, 1002), (1010, 1012), (1067, 1067))
+    m = p.devices[Device.M].views[View.BIT]
+    assert [(s.first, s.last, s.wire) for s in m.segments] == [
+        (0, 1535, 0x0800),
+        (1536, 4095, 0xB000),
+    ]
+    assert p.devices[Device.X].views[View.BIT].writable is False
+    assert p.devices[Device.Y].views[View.BIT].writable is True
+
+
+def test_device_views_spelling_is_fixed():
+    assert DEVICE_VIEWS[Device.D] == (View.WORD,)
+    assert DEVICE_VIEWS[Device.M] == (View.BIT,)
+    assert DEVICE_VIEWS[Device.X] == (View.BIT,)
+    assert DEVICE_VIEWS[Device.Y] == (View.BIT,)

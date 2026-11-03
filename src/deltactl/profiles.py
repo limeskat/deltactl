@@ -2,23 +2,101 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from enum import Enum
+from types import MappingProxyType
 
 from .errors import DeltaValueError, UnknownModelCodeError
 
 __all__ = [
     "DEFAULT_PROFILE",
+    "DEVICE_VIEWS",
     "PROFILE_ES2_EX2",
     "PROFILE_ES_EX_SS",
     "PROFILE_SA_SX_SC",
     "PROFILE_SE_EH3_SV2",
     "PROFILE_SS2",
+    "Device",
+    "DeviceSpec",
+    "Segment",
     "SeriesProfile",
+    "View",
+    "ViewSpec",
     "decode_d1001",
     "get_profile",
     "intersect_profiles",
     "list_profiles",
 ]
+
+
+class Device(str, Enum):
+    """Delta DVP memory devices handled by the driver."""
+
+    D = "D"
+    M = "M"
+    X = "X"
+    Y = "Y"
+
+
+class View(str, Enum):
+    """The bit or word face of a device."""
+
+    BIT = "bit"
+    WORD = "word"
+
+
+@dataclass(frozen=True)
+class Segment:
+    """One contiguous index range of a view and its wire anchor.
+
+    ``wire`` is the Modbus address of ``first``; subsequent indices advance by
+    ``step``. ``intercept`` normalizes that to ``wire(index) = intercept + index * step``.
+    """
+
+    first: int
+    last: int
+    wire: int
+    step: int = 1
+    value_width: int = 1
+    default_dtype: str | None = None
+    coalesce: bool = True
+
+    @property
+    def intercept(self) -> int:
+        """Wire offset such that ``wire_at(index) == intercept + index * step``."""
+        return self.wire - self.first * self.step
+
+    def wire_at(self, index: int) -> int:
+        """Modbus wire address of ``index`` in this segment."""
+        return self.intercept + index * self.step
+
+
+@dataclass(frozen=True)
+class ViewSpec:
+    """One addressing view (bit or word) of a device."""
+
+    function: int
+    writable: bool
+    segments: tuple[Segment, ...]
+    guards: tuple[tuple[int, int], ...] = ()
+
+
+@dataclass(frozen=True)
+class DeviceSpec:
+    """Every view a device exposes, keyed by view kind."""
+
+    views: Mapping[View, ViewSpec]
+
+
+DEVICE_VIEWS: Mapping[Device, tuple[View, ...]] = MappingProxyType(
+    {
+        Device.D: (View.WORD,),
+        Device.M: (View.BIT,),
+        Device.X: (View.BIT,),
+        Device.Y: (View.BIT,),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +113,94 @@ class SeriesProfile:
     y_max_octal: int
     guarded_d: tuple[tuple[int, int], ...]
     guarded_m: tuple[tuple[int, int], ...]
+    devices: Mapping[Device, DeviceSpec] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.devices:
+            object.__setattr__(self, "devices", _devices_from_flat(self))
+
+
+def _split_segments(
+    ranges: tuple[tuple[int, int], ...],
+    split: int | None,
+    low_wire: int,
+    high_wire: int,
+) -> tuple[Segment, ...]:
+    """Split flat index ranges at ``split``, re-anchoring the high half at ``high_wire``."""
+    out: list[Segment] = []
+    for lo, hi in ranges:
+        if split is None or hi <= split:
+            out.append(Segment(lo, hi, low_wire + lo))
+        elif lo > split:
+            out.append(Segment(lo, hi, high_wire + (lo - (split + 1))))
+        else:
+            out.append(Segment(lo, split, low_wire + lo))
+            out.append(Segment(split + 1, hi, high_wire))
+    return tuple(out)
+
+
+def _devices_from_flat(profile: SeriesProfile) -> Mapping[Device, DeviceSpec]:
+    """Build the device specs from the profile's flat range/wire fields."""
+    return MappingProxyType(
+        {
+            Device.D: DeviceSpec(
+                MappingProxyType(
+                    {
+                        View.WORD: ViewSpec(
+                            3,
+                            True,
+                            _split_segments(
+                                profile.d_ranges,
+                                profile.d_split_boundary,
+                                0x1000,
+                                0x9000,
+                            ),
+                            profile.guarded_d,
+                        )
+                    }
+                )
+            ),
+            Device.M: DeviceSpec(
+                MappingProxyType(
+                    {
+                        View.BIT: ViewSpec(
+                            1,
+                            True,
+                            _split_segments(
+                                profile.m_ranges,
+                                profile.m_split_boundary,
+                                0x0800,
+                                0xB000,
+                            ),
+                            profile.guarded_m,
+                        )
+                    }
+                )
+            ),
+            Device.X: DeviceSpec(
+                MappingProxyType(
+                    {
+                        View.BIT: ViewSpec(
+                            2,
+                            False,
+                            (Segment(0, profile.x_max_octal, 0x0400),),
+                        )
+                    }
+                )
+            ),
+            Device.Y: DeviceSpec(
+                MappingProxyType(
+                    {
+                        View.BIT: ViewSpec(
+                            1,
+                            True,
+                            (Segment(0, profile.y_max_octal, 0x0500),),
+                        )
+                    }
+                )
+            ),
+        }
+    )
 
 
 _DEFAULT_GUARDED_D: tuple[tuple[int, int], ...] = (

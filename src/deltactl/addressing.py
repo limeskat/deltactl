@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum
 
 from .errors import (
     AddressRangeError,
@@ -14,7 +13,7 @@ from .errors import (
     DeltaAddressError,
     ReadOnlyAddressError,
 )
-from .profiles import DEFAULT_PROFILE, SeriesProfile
+from .profiles import DEFAULT_PROFILE, Device, SeriesProfile
 
 __all__ = [
     "D_GUARDS",
@@ -31,15 +30,6 @@ __all__ = [
     "validate_span",
     "wire_for",
 ]
-
-
-class Device(str, Enum):
-    """Delta DVP memory devices handled by the driver."""
-
-    D = "D"
-    M = "M"
-    X = "X"
-    Y = "Y"
 
 
 _D_SPLIT = 4096  # D0–D4095 is block 0; D4096–D11999 is block 1
