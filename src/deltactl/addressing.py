@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 
 from .errors import (
     AddressRangeError,
@@ -13,7 +14,15 @@ from .errors import (
     DeltaAddressError,
     ReadOnlyAddressError,
 )
-from .profiles import DEFAULT_PROFILE, Device, SeriesProfile
+from .profiles import (
+    DEFAULT_PROFILE,
+    DEVICE_VIEWS,
+    Device,
+    Segment,
+    SeriesProfile,
+    View,
+    ViewSpec,
+)
 
 __all__ = [
     "D_GUARDS",
@@ -22,6 +31,7 @@ __all__ = [
     "Device",
     "ParsedTag",
     "TagAddress",
+    "View",
     "block_for",
     "expand_tags",
     "normalize_tag",
@@ -74,6 +84,9 @@ class Address:
     index: int
     wire: int
     block: int
+    view: View
+    function: int
+    segment: Segment
     bit: int | None = None
 
     @property
@@ -110,6 +123,26 @@ class ParsedTag:
     def bit(self) -> int | None:
         return self.address.bit
 
+    @property
+    def view(self) -> View:
+        return self.address.view
+
+    @property
+    def function(self) -> int:
+        return self.address.function
+
+    @property
+    def value_width(self) -> int:
+        return self.address.segment.value_width
+
+    @property
+    def default_dtype(self) -> str | None:
+        return self.address.segment.default_dtype
+
+    @property
+    def coalesce(self) -> bool:
+        return self.address.segment.coalesce
+
 
 TagAddress = Address | ParsedTag
 
@@ -126,56 +159,81 @@ def _format_tag(
     return text
 
 
-def wire_for(device: Device, index: int, profile: SeriesProfile | None = None) -> int:
-    """Modbus wire address for ``index`` within ``device``."""
-    prof = profile or DEFAULT_PROFILE
-    _check_index(device, index, prof)
-    if device is Device.D:
-        if prof.d_split_boundary is not None and index > prof.d_split_boundary:
-            return 0x9000 + (index - (prof.d_split_boundary + 1))
-        return 0x1000 + index
-    if device is Device.M:
-        if prof.m_split_boundary is not None and index > prof.m_split_boundary:
-            return 0xB000 + (index - (prof.m_split_boundary + 1))
-        return 0x0800 + index
-    if device is Device.X:
-        return 0x0400 + index
-    return 0x0500 + index
+def wire_for(
+    device: Device,
+    index: int,
+    *,
+    view: View | None = None,
+    profile: SeriesProfile | None = None,
+) -> int:
+    """Modbus wire address for ``index`` within ``device`` and ``view``."""
+    segment, _ = _locate(device, index, view, profile)
+    return segment.wire_at(index)
 
 
-def block_for(device: Device, index: int, profile: SeriesProfile | None = None) -> int:
-    """Planning block id (0 or 1) for ``index`` within ``device``."""
-    prof = profile or DEFAULT_PROFILE
-    _check_index(device, index, prof)
-    if device is Device.D:
-        if prof.d_split_boundary is None:
-            return 0
-        return 0 if index <= prof.d_split_boundary else 1
-    if device is Device.M:
-        if prof.m_split_boundary is None:
-            return 0
-        return 0 if index <= prof.m_split_boundary else 1
-    return 0
+def block_for(
+    device: Device,
+    index: int,
+    *,
+    view: View | None = None,
+    profile: SeriesProfile | None = None,
+) -> int:
+    """Planning block id for ``index``: its wire anchor's rank within the view."""
+    segment, view_spec = _locate(device, index, view, profile)
+    return _block_of(segment, view_spec)
 
 
-def _check_index(device: Device, index: int, profile: SeriesProfile | None = None) -> None:
-    prof = profile or DEFAULT_PROFILE
-    if device is Device.D:
-        if not any(lo <= index <= hi for lo, hi in prof.d_ranges):
-            ranges_str = ", ".join(f"{lo}-{hi}" for lo, hi in prof.d_ranges)
-            raise AddressRangeError(
-                f"{device.value}{index} is outside the {device.value} range ({ranges_str})"
+def _block_of(segment: Segment, view_spec: ViewSpec) -> int:
+    """Ordinal of ``segment``'s intercept among the view's distinct intercepts."""
+    intercepts = list(dict.fromkeys(s.intercept for s in view_spec.segments))
+    return intercepts.index(segment.intercept)
+
+
+def _resolve_view(device: Device, view: View | None) -> View:
+    """Infer the only view of a single-view device, else require an explicit one."""
+    try:
+        views = DEVICE_VIEWS[device]
+    except KeyError:
+        raise ValueError(f"unknown device {device!r}") from None
+    if view is None:
+        if len(views) > 1:
+            names = ", ".join(v.value for v in views)
+            raise ValueError(
+                f"{device.value} has multiple views ({names}); specify view= explicitly"
             )
-    elif device is Device.M:
-        if not any(lo <= index <= hi for lo, hi in prof.m_ranges):
-            ranges_str = ", ".join(f"{lo}-{hi}" for lo, hi in prof.m_ranges)
-            raise AddressRangeError(
-                f"{device.value}{index} is outside the {device.value} range ({ranges_str})"
-            )
-    elif device is Device.X and not 0 <= index <= prof.x_max_octal:
-        raise AddressRangeError(f"X{index:o} is outside the X range (max X{prof.x_max_octal:o})")
-    elif device is Device.Y and not 0 <= index <= prof.y_max_octal:
-        raise AddressRangeError(f"Y{index:o} is outside the Y range (max Y{prof.y_max_octal:o})")
+        return views[0]
+    try:
+        resolved = View(view)
+    except ValueError:
+        names = ", ".join(v.value for v in views)
+        raise ValueError(
+            f"unknown view {view!r}: {device.value} has {names}"
+        ) from None
+    if resolved not in views:
+        names = ", ".join(v.value for v in views)
+        raise ValueError(
+            f"{device.value} has no {resolved.value} view; valid: {names}"
+        )
+    return resolved
+
+
+def _locate(
+    device: Device,
+    index: int,
+    view: View | None,
+    profile: SeriesProfile | None,
+) -> tuple[Segment, ViewSpec]:
+    """Segment containing ``index`` and its view spec."""
+    prof = profile or DEFAULT_PROFILE
+    resolved = _resolve_view(device, view)
+    view_spec = prof.devices[device].views[resolved]
+    for segment in view_spec.segments:
+        if segment.first <= index <= segment.last:
+            return segment, view_spec
+    ranges_str = ", ".join(f"{s.first}-{s.last}" for s in view_spec.segments)
+    raise AddressRangeError(
+        f"{_format_tag(device, index)} is outside the {device.value} range ({ranges_str})"
+    )
 
 
 def parse_tag(text: str, profile: SeriesProfile | None = None) -> ParsedTag:
@@ -218,13 +276,17 @@ def parse_tag(text: str, profile: SeriesProfile | None = None) -> ParsedTag:
                 f"{text!r}: bit addressing and a dtype suffix cannot be combined"
             )
 
-    _check_index(device, index, prof)
+    view = _resolve_view(device, None)
+    segment, view_spec = _locate(device, index, view, prof)
 
     address = Address(
         device=device,
         index=index,
-        wire=wire_for(device, index, profile=prof),
-        block=block_for(device, index, profile=prof),
+        wire=segment.wire_at(index),
+        block=_block_of(segment, view_spec),
+        view=view,
+        function=view_spec.function,
+        segment=segment,
         bit=bit,
     )
     display = address.display if dtype is None else f"{address.display}:{dtype}"
@@ -252,12 +314,20 @@ def parse_raw(
     for lo, hi, base in ranges:
         if lo <= wire <= hi:
             index = base + (wire - lo)
-            _check_index(device, index, prof)
+            view = _resolve_view(device, None)
+            segment, view_spec = _locate(device, index, view, prof)
+            if segment.wire_at(index) != wire:
+                raise AddressRangeError(
+                    f"raw wire address 0x{wire:04X} is not addressable on the {device.value} view"
+                )
             return Address(
                 device=device,
                 index=index,
                 wire=wire,
-                block=block_for(device, index, profile=prof),
+                block=_block_of(segment, view_spec),
+                view=view,
+                function=view_spec.function,
+                segment=segment,
                 bit=None,
             )
     expected = " or ".join(f"0x{lo:04X}-0x{hi:04X}" for lo, hi, _ in ranges)
@@ -289,74 +359,94 @@ def validate_span(
     fails if any address in the entire span is guarded; no PDU is implied.
     """
     addr = _extract_address(address)
-    span_count = width if count is None else count
-    if span_count is None:
+    register_count = width if count is None else count
+    if register_count is None:
         raise ValueError("span width or count must be specified")
-    if span_count < 1:
-        raise ValueError(f"span width must be at least 1, got {span_count}")
+    if register_count < 1:
+        raise ValueError(f"span width must be at least 1, got {register_count}")
 
     prof = profile or DEFAULT_PROFILE
     device = addr.device
     start = addr.index
-    end = start + span_count - 1
 
-    if device is Device.D:
-        if not any(lo <= start and end <= hi for lo, hi in prof.d_ranges):
-            raise AddressRangeError(
-                f"span of {addr.display} [{start}, {start + span_count}) "
-                f"exceeds the {device.value} range for profile {prof.name}"
-            )
-    elif device is Device.M:
-        if not any(lo <= start and end <= hi for lo, hi in prof.m_ranges):
-            raise AddressRangeError(
-                f"span of {addr.display} [{start}, {start + span_count}) "
-                f"exceeds the {device.value} range for profile {prof.name}"
-            )
-    elif device is Device.X and (start < 0 or end > prof.x_max_octal):
+    try:
+        segment, view_spec = _locate(device, start, addr.view, prof)
+    except AddressRangeError:
         raise AddressRangeError(
-            f"span of {addr.display} [{start}, {start + span_count}) "
-            f"exceeds the {device.value} range (max X{prof.x_max_octal:o})"
+            _span_range_message(device, addr, start, register_count, prof)
+        ) from None
+
+    value_width = segment.value_width
+    if register_count % value_width:
+        raise ValueError(
+            f"span of {register_count} registers does not divide evenly into "
+            f"{device.value} {addr.view.value} values of width {value_width}"
         )
-    elif device is Device.Y and (start < 0 or end > prof.y_max_octal):
+    index_count = register_count // value_width
+    end = start + index_count - 1
+
+    segments = view_spec.segments
+    chain = [segment]
+    for nxt in segments[segments.index(segment) + 1 :]:
+        if nxt.first != chain[-1].last + 1:
+            break
+        chain.append(nxt)
+
+    if end > chain[-1].last:
         raise AddressRangeError(
-            f"span of {addr.display} [{start}, {start + span_count}) "
-            f"exceeds the {device.value} range (max Y{prof.y_max_octal:o})"
+            _span_range_message(device, addr, start, register_count, prof)
         )
 
-    if not allow_block_crossing:
-        split_boundary: int | None = None
-        if device is Device.D:
-            split_boundary = prof.d_split_boundary
-        elif device is Device.M:
-            split_boundary = prof.m_split_boundary
-
-        if split_boundary is not None and start <= split_boundary < end:
-            split = split_boundary + 1
-            raise BlockBoundaryError(
-                f"a single value spanning {addr.display}..{_format_tag(device, end)} "
-                f"crosses the {device.value}{split - 1}|{device.value}{split} block boundary"
-            )
+    if end > segment.last:
+        for prev, nxt in pairwise(chain):
+            if nxt.first > end:
+                break
+            if not allow_block_crossing or nxt.value_width != value_width:
+                raise _boundary_error(device, addr, end, prev, nxt)
 
     if write:
-        first = _first_guarded(device, start, end, prof)
+        if not view_spec.writable:
+            raise ReadOnlyAddressError(_read_only_message(device, start))
+        first = _first_guarded(view_spec.guards, start, end)
         if first is not None:
-            raise ReadOnlyAddressError(
-                f"{_format_tag(device, first)} is read-only: writes may not include guarded addresses"
-            )
+            raise ReadOnlyAddressError(_read_only_message(device, first))
+
+
+def _span_range_message(
+    device: Device,
+    addr: Address,
+    start: int,
+    register_count: int,
+    profile: SeriesProfile,
+) -> str:
+    return (
+        f"span of {addr.display} [{start}, {start + register_count}) "
+        f"exceeds the {device.value} range for profile {profile.name}"
+    )
+
+
+def _boundary_error(
+    device: Device, addr: Address, end: int, prev: Segment, nxt: Segment
+) -> BlockBoundaryError:
+    split = prev.last + 1
+    kind = "block" if nxt.intercept != prev.intercept else "width"
+    return BlockBoundaryError(
+        f"a single value spanning {addr.display}..{_format_tag(device, end)} "
+        f"crosses the {device.value}{split - 1}|{device.value}{split} {kind} boundary"
+    )
+
+
+def _read_only_message(device: Device, index: int) -> str:
+    return (
+        f"{_format_tag(device, index)} is read-only: "
+        f"writes may not include guarded addresses"
+    )
 
 
 def _first_guarded(
-    device: Device, start: int, end: int, profile: SeriesProfile | None = None
+    guards: tuple[tuple[int, int], ...], start: int, end: int
 ) -> int | None:
     """First guarded index overlapped by the inclusive span ``[start, end]``."""
-    if device is Device.X:
-        return start  # X0–X377 is entirely read-only
-    prof = profile or DEFAULT_PROFILE
-    guards: tuple[tuple[int, int], ...] = ()
-    if device is Device.D:
-        guards = prof.guarded_d
-    elif device is Device.M:
-        guards = prof.guarded_m
     for lo, hi in guards:
         if start <= hi and end >= lo:
             return max(lo, start)
@@ -442,5 +532,5 @@ def _expand_range(
     device = lo_addr.device
     prof = profile or DEFAULT_PROFILE
     for index in range(lo_addr.index, hi_addr.index + 1):
-        _check_index(device, index, prof)
+        _locate(device, index, None, prof)
         _add_unique(_format_tag(device, index, dtype=dtype), out, seen, limit)

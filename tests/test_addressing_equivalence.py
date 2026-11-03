@@ -17,7 +17,16 @@ from deltactl.profiles import (
     PROFILE_SA_SX_SC,
     PROFILE_SE_EH3_SV2,
     PROFILE_SS2,
+    View,
 )
+
+# v0.2.0 had one addressing face per device; pin each to its current view.
+_view_for = {
+    Device.D: View.WORD,
+    Device.M: View.BIT,
+    Device.X: View.BIT,
+    Device.Y: View.BIT,
+}
 
 PROFILES = [
     PROFILE_SE_EH3_SV2,
@@ -167,17 +176,19 @@ def test_wire_and_block_match_v020(profile, device):
         # rejected; keep pinning that rejection instead of skipping silently.
         if not _legacy_in_range(row, device, index):
             with pytest.raises(AddressRangeError):
-                wire_for(device, index, profile=profile)
+                wire_for(device, index, view=_view_for[device], profile=profile)
             with pytest.raises(AddressRangeError):
-                block_for(device, index, profile=profile)
+                block_for(device, index, view=_view_for[device], profile=profile)
             continue
-        assert wire_for(device, index, profile=profile) == _legacy_wire(row, device, index)
+        assert wire_for(
+            device, index, view=_view_for[device], profile=profile
+        ) == _legacy_wire(row, device, index)
         expected_block = 0
         if device is Device.D and row["dsplit"] is not None and index > row["dsplit"]:
             expected_block = 1
         if device is Device.M and row["msplit"] is not None and index > row["msplit"]:
             expected_block = 1
-        assert block_for(device, index, profile=profile) == expected_block
+        assert block_for(device, index, view=_view_for[device], profile=profile) == expected_block
 
 
 @pytest.mark.parametrize("profile", PROFILES, ids=lambda p: p.name)
