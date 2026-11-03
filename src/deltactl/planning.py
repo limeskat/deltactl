@@ -90,6 +90,8 @@ def make_tag(
     """
     prof = profile or DEFAULT_PROFILE
     resolved_dtype = dtype if dtype is not None else default_dtype
+    if resolved_dtype is not None:
+        resolved_dtype = DType(resolved_dtype)
     parsed = parse_tag(text, profile=prof)
     address = parsed.address
     bit_like = address.bit is not None or address.view is View.BIT
@@ -103,10 +105,24 @@ def make_tag(
     else:
         if inline is not None:
             target_dtype = inline
-        elif resolved_dtype is not None:
-            target_dtype = resolved_dtype
+        elif dtype is not None:
+            target_dtype = DType(dtype)
+        elif address.segment.default_dtype is not None:
+            target_dtype = DType(address.segment.default_dtype)
+        elif default_dtype is not None:
+            target_dtype = DType(default_dtype)
         else:
             target_dtype = DType.U16
+
+        if address.segment.default_dtype is not None and (
+            target_dtype is DType.F32
+            or target_dtype is DType.BIT
+            or target_dtype.width != address.segment.value_width
+        ):
+            raise DeltaValueError(
+                f"{parsed.display} is a fixed-width segment of width {address.segment.value_width}: "
+                f"dtype must be an integer of matching width, got {target_dtype.value}"
+            )
     width = target_dtype.width
     validate_span(address, width, write=False, profile=prof)
     return Tag(name=parsed.display, address=address, dtype=target_dtype, width=width)

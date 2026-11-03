@@ -225,3 +225,40 @@ def test_empty_intersection_stays_empty():
         result = intersect_profiles(a, b)
         assert result.devices == {}
         assert Device.D not in result.devices
+
+
+def test_canonical_profiles_stc_devices():
+    p_es = PROFILE_ES_EX_SS
+    assert p_es.devices[Device.S].views[View.BIT].segments == (Segment(0, 127, 0x0000),)
+    assert p_es.devices[Device.T].views[View.BIT].segments == (Segment(0, 127, 0x0600),)
+    assert p_es.devices[Device.T].views[View.WORD].segments == (
+        Segment(0, 127, 0x0600, value_width=1, default_dtype="u16"),
+    )
+    assert p_es.devices[Device.C].views[View.BIT].segments == (
+        Segment(0, 127, 0x0E00),
+        Segment(235, 254, 0x0EEB),
+    )
+    assert p_es.devices[Device.C].views[View.WORD].segments == (
+        Segment(0, 127, 0x0E00, value_width=1, default_dtype="u16"),
+        Segment(235, 254, 0x0EEB, value_width=2, default_dtype="i32", coalesce=False),
+    )
+
+    for p in (PROFILE_SE_EH3_SV2, PROFILE_ES2_EX2, PROFILE_SS2, PROFILE_SA_SX_SC):
+        assert p.devices[Device.S].views[View.BIT].segments == (Segment(0, 1023, 0x0000),)
+        assert p.devices[Device.T].views[View.BIT].segments == (Segment(0, 255, 0x0600),)
+        assert p.devices[Device.T].views[View.WORD].segments == (
+            Segment(0, 255, 0x0600, value_width=1, default_dtype="u16"),
+        )
+        assert p.devices[Device.C].views[View.BIT].segments == (
+            Segment(0, 199, 0x0E00),
+            Segment(200, 254, 0x0EC8),
+        )
+        assert p.devices[Device.C].views[View.WORD].segments == (
+            Segment(0, 199, 0x0E00, value_width=1, default_dtype="u16"),
+            Segment(200, 254, 0x0EC8, value_width=2, default_dtype="i32", coalesce=False),
+        )
+        assert p.devices[Device.S].views[View.BIT].writable is False
+        assert p.devices[Device.T].views[View.BIT].writable is False
+        assert p.devices[Device.T].views[View.WORD].writable is False
+        assert p.devices[Device.C].views[View.BIT].writable is False
+        assert p.devices[Device.C].views[View.WORD].writable is False

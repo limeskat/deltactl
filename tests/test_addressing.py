@@ -12,7 +12,15 @@ from deltactl.errors import (
     AddressRangeError,
     AddressSyntaxError,
     BlockBoundaryError,
+    DeltaValueError,
     ReadOnlyAddressError,
+)
+from deltactl.packing import DType
+from deltactl.planning import make_tag
+from deltactl.profiles import (
+    DEVICE_VIEWS,
+    Device,
+    View,
 )
 
 
@@ -119,3 +127,85 @@ def test_range_expansion_dedupe_and_cap():
         expand_tags(["D100-M101"])
     with pytest.raises(ValueError):
         expand_tags(["D0-D1024"])
+
+
+@pytest.mark.parametrize(
+    "text,name",
+    [
+        ("S0", "S0"),
+        ("s1023", "S1023"),
+        ("T0.c", "T0.c"),
+        ("t255.v", "T255.v"),
+        ("C0.c", "C0.c"),
+        ("C200.v", "C200.v"),
+    ],
+)
+def test_new_tags_parse(text, name):
+    assert parse_tag(text).display == name
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "T0",
+        "C0",
+        "T0.3",
+        "S0.c",
+        "D100.c",
+        "M0.v",
+        "C200.v:u16",
+        "C0.v:u32",
+        "C200.v:f32",
+        "T0.c:u32",
+    ],
+)
+def test_new_tags_reject(text):
+    with pytest.raises(AddressSyntaxError):
+        parse_tag(text)
+
+
+def test_c200_defaults_to_i32():
+    tag = make_tag("C200.v")
+    assert tag.dtype is DType.I32 and tag.width == 2 and tag.address.wire == 0x0EC8
+
+
+def test_t0_value_is_u16():
+    tag = make_tag("T0.v")
+    assert tag.dtype is DType.U16 and tag.address.wire == 0x0600
+
+
+def test_new_device_views_are_fixed():
+    assert DEVICE_VIEWS[Device.S] == (View.BIT,)
+    assert DEVICE_VIEWS[Device.T] == (View.BIT, View.WORD)
+    assert DEVICE_VIEWS[Device.C] == (View.BIT, View.WORD)
+
+
+def test_span_range_message_uses_index_count():
+    addr = parse_tag("C254.v").address
+    with pytest.raises(AddressRangeError, match=r"\[254, 256\)"):
+        validate_span(addr, 4)
+
+
+@pytest.mark.parametrize("tag_text", ["S0", "T0.c", "T0.v", "C0.c", "C0.v", "C200.v"])
+def test_stc_writes_rejected_as_read_only(tag_text):
+    addr = parse_tag(tag_text).address
+    with pytest.raises(ReadOnlyAddressError):
+        validate_span(addr, addr.segment.value_width, write=True)
+
+
+def test_make_tag_stc_fixed_width_rules():
+    assert make_tag("C200.v", dtype=DType.U32).dtype is DType.U32
+    assert make_tag("T0.v", dtype=DType.I16).dtype is DType.I16
+    assert make_tag("C0.v", dtype=DType.I16).dtype is DType.I16
+
+    assert make_tag("C200.v", default_dtype=DType.U16).dtype is DType.I32
+    assert make_tag("T0.v", default_dtype=DType.I32).dtype is DType.U16
+
+    with pytest.raises(DeltaValueError):
+        make_tag("C200.v", dtype=DType.U16)
+    with pytest.raises(DeltaValueError):
+        make_tag("C200.v", dtype=DType.F32)
+    with pytest.raises(DeltaValueError):
+        make_tag("T0.v", dtype=DType.U32)
+    with pytest.raises(DeltaValueError):
+        make_tag("T0.v", dtype=DType.F32)

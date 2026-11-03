@@ -50,8 +50,8 @@ D_GUARDS: tuple[tuple[int, int], ...] = ((1000, 1002), (1010, 1012), (1067, 1067
 M_GUARDS: tuple[tuple[int, int], ...] = ((1000, 1003), (1067, 1067))
 
 _TAG_RE = re.compile(
-    r"^(?P<dev>[DdMmXxYy])(?P<index>[0-9]+)"
-    r"(?:\.(?P<bit>[0-9]+))?(?::(?P<dtype>u16|i16|i32|u32|f32))?$",
+    r"^(?P<dev>[DMSXYTC])(?P<index>[0-9]+)"
+    r"(?:\.(?P<member>[0-9]+|[CV]))?(?::(?P<dtype>u16|i16|i32|u32|f32))?$",
     re.IGNORECASE,
 )
 
@@ -82,7 +82,7 @@ class Address:
     @property
     def display(self) -> str:
         """Canonical base tag: uppercase device, no leading zeros, octal for X/Y."""
-        return _format_tag(self.device, self.index, bit=self.bit)
+        return _format_tag(self.device, self.index, view=self.view, bit=self.bit)
 
 
 @dataclass(frozen=True)
@@ -138,11 +138,21 @@ TagAddress = Address | ParsedTag
 
 
 def _format_tag(
-    device: Device, index: int, *, bit: int | None = None, dtype: str | None = None
+    device: Device,
+    index: int,
+    *,
+    view: View | None = None,
+    bit: int | None = None,
+    dtype: str | None = None,
 ) -> str:
     digits = f"{index:o}" if device in _OCTAL_DEVICES else str(index)
     text = f"{device.value}{digits}"
-    if bit is not None:
+    if len(DEVICE_VIEWS.get(device, ())) > 1:
+        if view is View.BIT:
+            text = f"{text}.c"
+        elif view is View.WORD:
+            text = f"{text}.v"
+    elif bit is not None:
         text = f"{text}.{bit}"
     if dtype is not None:
         text = f"{text}:{dtype}"
@@ -196,14 +206,10 @@ def _resolve_view(device: Device, view: View | None) -> View:
         resolved = View(view)
     except ValueError:
         names = ", ".join(v.value for v in views)
-        raise ValueError(
-            f"unknown view {view!r}: {device.value} has {names}"
-        ) from None
+        raise ValueError(f"unknown view {view!r}: {device.value} has {names}") from None
     if resolved not in views:
         names = ", ".join(v.value for v in views)
-        raise ValueError(
-            f"{device.value} has no {resolved.value} view; valid: {names}"
-        )
+        raise ValueError(f"{device.value} has no {resolved.value} view; valid: {names}")
     return resolved
 
 
@@ -222,7 +228,7 @@ def _locate(
             return segment, view_spec
     ranges_str = ", ".join(f"{s.first}-{s.last}" for s in view_spec.segments)
     raise AddressRangeError(
-        f"{_format_tag(device, index)} is outside the {device.value} range ({ranges_str})"
+        f"{_format_tag(device, index, view=resolved)} is outside the {device.value} range ({ranges_str})"
     )
 
 
@@ -236,7 +242,7 @@ def parse_tag(text: str, profile: SeriesProfile | None = None) -> ParsedTag:
         )
     device = Device(match["dev"].upper())
     index_text = match["index"]
-    bit_text = match["bit"]
+    member_text = match["member"]
     dtype_text = match["dtype"]
 
     if device in _OCTAL_DEVICES:
@@ -248,26 +254,59 @@ def parse_tag(text: str, profile: SeriesProfile | None = None) -> ParsedTag:
     else:
         index = int(index_text)
 
+    views = DEVICE_VIEWS[device]
+    is_multiview = len(views) > 1
+
     bit: int | None = None
-    if bit_text is not None:
-        if device is not Device.D:
-            raise AddressSyntaxError(f"{text!r}: bit addressing is only supported on D")
-        bit = int(bit_text)
-        if bit > 15:
-            raise AddressSyntaxError(f"{text!r}: D bit index must be 0..15")
+    view: View
+
+    if is_multiview:
+        if member_text is None:
+            suffixes = "/".join(f".{v.value[0]}" for v in views)
+            raise AddressSyntaxError(
+                f"{text!r}: {device.value} has multiple views; a view suffix ({suffixes}) is required"
+            )
+        member_lower = member_text.lower()
+        if member_lower == "c":
+            view = View.BIT
+        elif member_lower == "v":
+            view = View.WORD
+        else:
+            raise AddressSyntaxError(f"{text!r}: numeric member addressing is only supported on D")
+    else:
+        view = views[0]
+        if member_text is not None:
+            if device is not Device.D or not member_text.isdigit():
+                if device is Device.D:
+                    raise AddressSyntaxError(
+                        f"{text!r}: view suffixes are not valid on single-view device D"
+                    )
+                raise AddressSyntaxError(
+                    f"{text!r}: member suffix is not valid on single-view device {device.value}"
+                )
+            bit = int(member_text)
+            if bit > 15:
+                raise AddressSyntaxError(f"{text!r}: D bit index must be 0..15")
 
     dtype: str | None = None
     if dtype_text is not None:
-        if device is not Device.D:
-            raise AddressSyntaxError(f"{text!r}: dtype suffixes are only supported on D")
+        if view is View.BIT or bit is not None:
+            raise AddressSyntaxError(f"{text!r}: dtype suffixes are not supported on bit views")
         dtype = dtype_text.lower()
-        if bit is not None:
-            raise AddressSyntaxError(
-                f"{text!r}: bit addressing and a dtype suffix cannot be combined"
-            )
 
-    view = _resolve_view(device, None)
     segment, view_spec = _locate(device, index, view, prof)
+
+    if dtype is not None and segment.default_dtype is not None:
+        if dtype == "f32":
+            raise AddressSyntaxError(
+                f"{text!r}: f32 is not allowed on fixed-width {device.value} values"
+            )
+        dtype_width = 2 if dtype in ("i32", "u32", "f32") else 1
+        if dtype_width != segment.value_width:
+            raise AddressSyntaxError(
+                f"{text!r}: dtype {dtype} width {dtype_width} does not match "
+                f"segment value_width {segment.value_width}"
+            )
 
     address = Address(
         device=device,
@@ -362,8 +401,9 @@ def validate_span(
     try:
         segment, view_spec = _locate(device, start, addr.view, prof)
     except AddressRangeError:
+        index_count = register_count // addr.segment.value_width
         raise AddressRangeError(
-            _span_range_message(device, addr, start, register_count, prof)
+            _span_range_message(device, addr, start, index_count, prof)
         ) from None
 
     value_width = segment.value_width
@@ -383,9 +423,7 @@ def validate_span(
         chain.append(nxt)
 
     if end > chain[-1].last:
-        raise AddressRangeError(
-            _span_range_message(device, addr, start, register_count, prof)
-        )
+        raise AddressRangeError(_span_range_message(device, addr, start, index_count, prof))
 
     if end > segment.last:
         for prev, nxt in pairwise(chain):
@@ -396,21 +434,21 @@ def validate_span(
 
     if write:
         if not view_spec.writable:
-            raise ReadOnlyAddressError(_read_only_message(device, start))
+            raise ReadOnlyAddressError(_read_only_message(device, start, view=addr.view))
         first = _first_guarded(view_spec.guards, start, end)
         if first is not None:
-            raise ReadOnlyAddressError(_read_only_message(device, first))
+            raise ReadOnlyAddressError(_read_only_message(device, first, view=addr.view))
 
 
 def _span_range_message(
     device: Device,
     addr: Address,
     start: int,
-    register_count: int,
+    index_count: int,
     profile: SeriesProfile,
 ) -> str:
     return (
-        f"span of {addr.display} [{start}, {start + register_count}) "
+        f"span of {addr.display} [{start}, {start + index_count}) "
         f"exceeds the {device.value} range for profile {profile.name}"
     )
 
@@ -421,21 +459,19 @@ def _boundary_error(
     split = prev.last + 1
     kind = "block" if nxt.intercept != prev.intercept else "width"
     return BlockBoundaryError(
-        f"a single value spanning {addr.display}..{_format_tag(device, end)} "
+        f"a single value spanning {addr.display}..{_format_tag(device, end, view=addr.view)} "
         f"crosses the {device.value}{split - 1}|{device.value}{split} {kind} boundary"
     )
 
 
-def _read_only_message(device: Device, index: int) -> str:
+def _read_only_message(device: Device, index: int, view: View | None = None) -> str:
     return (
-        f"{_format_tag(device, index)} is read-only: "
+        f"{_format_tag(device, index, view=view)} is read-only: "
         f"writes may not include guarded addresses"
     )
 
 
-def _first_guarded(
-    guards: tuple[tuple[int, int], ...], start: int, end: int
-) -> int | None:
+def _first_guarded(guards: tuple[tuple[int, int], ...], start: int, end: int) -> int | None:
     """First guarded index overlapped by the inclusive span ``[start, end]``."""
     for lo, hi in guards:
         if start <= hi and end >= lo:

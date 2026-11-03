@@ -66,6 +66,13 @@ def test_guard_and_usage_errors(capsys, mock):
         main(["read", "D100", "M0", "--dtype", "f32"])
 
 
+def test_dtype_target_error_message(capsys):
+    with pytest.raises(SystemExit):
+        main(["read", "M0", "--dtype", "u16"])
+    err = capsys.readouterr().err
+    assert "--dtype is only valid for word tags, not M0" in err
+
+
 def test_dry_run_no_io(capsys):
     assert (
         main(["write", "D100", "1", "--dry-run", "--host", "203.0.113.1", "--timeout", "0.01"]) == 0

@@ -37,6 +37,9 @@ class Device(str, Enum):
     M = "M"
     X = "X"
     Y = "Y"
+    S = "S"
+    T = "T"
+    C = "C"
 
 
 class View(str, Enum):
@@ -95,6 +98,9 @@ DEVICE_VIEWS: Mapping[Device, tuple[View, ...]] = MappingProxyType(
         Device.M: (View.BIT,),
         Device.X: (View.BIT,),
         Device.Y: (View.BIT,),
+        Device.S: (View.BIT,),
+        Device.T: (View.BIT, View.WORD),
+        Device.C: (View.BIT, View.WORD),
     }
 )
 
@@ -162,20 +168,100 @@ def _y_spec(max_octal: int) -> ViewSpec:
     return ViewSpec(1, True, (Segment(0, max_octal, 0x0500),))
 
 
+def _s_spec(max_index: int) -> DeviceSpec:
+    """S bit view (FC01): read-only, one contiguous 0x0000 block."""
+    return DeviceSpec(
+        MappingProxyType(
+            {
+                View.BIT: ViewSpec(1, False, (Segment(0, max_index, 0x0000),)),
+            }
+        )
+    )
+
+
+def _t_spec(max_index: int) -> DeviceSpec:
+    """T timer spec: bit contact (FC01) and word value (FC03) at 0x0600, read-only."""
+    return DeviceSpec(
+        MappingProxyType(
+            {
+                View.BIT: ViewSpec(1, False, (Segment(0, max_index, 0x0600),)),
+                View.WORD: ViewSpec(
+                    3,
+                    False,
+                    (
+                        Segment(
+                            0,
+                            max_index,
+                            0x0600,
+                            value_width=1,
+                            default_dtype="u16",
+                        ),
+                    ),
+                ),
+            }
+        )
+    )
+
+
+def _c_spec(c16_max: int, c32_first: int, c32_last: int) -> DeviceSpec:
+    """C counter spec: bit contact (FC01) and 16/32-bit word value (FC03) at 0x0E00, read-only."""
+    return DeviceSpec(
+        MappingProxyType(
+            {
+                View.BIT: ViewSpec(
+                    1,
+                    False,
+                    (
+                        Segment(0, c16_max, 0x0E00),
+                        Segment(c32_first, c32_last, 0x0E00 + c32_first),
+                    ),
+                ),
+                View.WORD: ViewSpec(
+                    3,
+                    False,
+                    (
+                        Segment(
+                            0,
+                            c16_max,
+                            0x0E00,
+                            value_width=1,
+                            default_dtype="u16",
+                        ),
+                        Segment(
+                            c32_first,
+                            c32_last,
+                            0x0E00 + c32_first,
+                            value_width=2,
+                            default_dtype="i32",
+                            coalesce=False,
+                        ),
+                    ),
+                ),
+            }
+        )
+    )
+
+
 def _devices(
     *,
     d: ViewSpec,
     m: ViewSpec,
     x: ViewSpec,
     y: ViewSpec,
+    s: DeviceSpec,
+    t: DeviceSpec,
+    c: DeviceSpec,
 ) -> Mapping[Device, DeviceSpec]:
-    """Assemble a read-only device mapping from each device's single view."""
+    """Assemble a read-only device mapping for all supported devices."""
     return MappingProxyType(
         {
             Device.D: DeviceSpec(MappingProxyType({View.WORD: d})),
             Device.M: DeviceSpec(MappingProxyType({View.BIT: m})),
             Device.X: DeviceSpec(MappingProxyType({View.BIT: x})),
             Device.Y: DeviceSpec(MappingProxyType({View.BIT: y})),
+            Device.S: s,
+            Device.T: t,
+            Device.C: c,
         }
     )
 
@@ -210,6 +296,9 @@ PROFILE_SE_EH3_SV2 = SeriesProfile(
         m=_m_spec(((0, 4095),), 1535, _DEFAULT_GUARDED_M),
         x=_x_spec(0o377),
         y=_y_spec(0o377),
+        s=_s_spec(1023),
+        t=_t_spec(255),
+        c=_c_spec(199, 200, 254),
     ),
 )
 
@@ -237,6 +326,9 @@ PROFILE_ES2_EX2 = SeriesProfile(
         m=_m_spec(((0, 4095),), 1535, _DEFAULT_GUARDED_M),
         x=_x_spec(0o377),
         y=_y_spec(0o377),
+        s=_s_spec(1023),
+        t=_t_spec(255),
+        c=_c_spec(199, 200, 254),
     ),
 )
 
@@ -253,6 +345,9 @@ PROFILE_SS2 = SeriesProfile(
         m=_m_spec(((0, 4095),), 1535, _DEFAULT_GUARDED_M),
         x=_x_spec(0o377),
         y=_y_spec(0o377),
+        s=_s_spec(1023),
+        t=_t_spec(255),
+        c=_c_spec(199, 200, 254),
     ),
 )
 
@@ -271,6 +366,9 @@ PROFILE_SA_SX_SC = SeriesProfile(
         m=_m_spec(((0, 4095),), 1535, _DEFAULT_GUARDED_M),
         x=_x_spec(0o177),
         y=_y_spec(0o177),
+        s=_s_spec(1023),
+        t=_t_spec(255),
+        c=_c_spec(199, 200, 254),
     ),
 )
 
@@ -289,6 +387,9 @@ PROFILE_ES_EX_SS = SeriesProfile(
         m=_m_spec(((0, 1279),), None, _DEFAULT_GUARDED_M),
         x=_x_spec(0o177),
         y=_y_spec(0o177),
+        s=_s_spec(127),
+        t=_t_spec(127),
+        c=_c_spec(127, 235, 254),
     ),
 )
 

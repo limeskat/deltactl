@@ -499,12 +499,12 @@ def _check_dtype_target(
     parser: argparse.ArgumentParser,
     profile: SeriesProfile | None = None,
 ) -> None:
-    """Reject ``--dtype`` unless *text* is a plain (non-bit) D tag."""
+    """Reject ``--dtype`` unless *text* is a plain (non-bit) word tag."""
     if dtype is None:
         return
     parsed = parse_tag(text, profile=profile)
     if parsed.address.view is not View.WORD or parsed.address.bit is not None:
-        parser.error(f"--dtype is only valid for D word tags, not {parsed.display}")
+        parser.error(f"--dtype is only valid for word tags, not {parsed.display}")
 
 
 # -- read ------------------------------------------------------------------
