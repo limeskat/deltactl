@@ -1,4 +1,6 @@
 # tests/test_profiles.py
+from types import MappingProxyType
+
 import pytest
 
 from deltactl.errors import DeltaValueError, UnknownModelCodeError
@@ -11,7 +13,11 @@ from deltactl.profiles import (
     PROFILE_SE_EH3_SV2,
     PROFILE_SS2,
     Device,
+    DeviceSpec,
+    Segment,
+    SeriesProfile,
     View,
+    ViewSpec,
     decode_d1001,
     get_profile,
     intersect_profiles,
@@ -114,3 +120,61 @@ def test_device_views_spelling_is_fixed():
     assert DEVICE_VIEWS[Device.M] == (View.BIT,)
     assert DEVICE_VIEWS[Device.X] == (View.BIT,)
     assert DEVICE_VIEWS[Device.Y] == (View.BIT,)
+
+
+def test_intersection_matches_old_d_m_x_y():
+    p = intersect_profiles(PROFILE_SE_EH3_SV2, PROFILE_ES_EX_SS)
+    assert p.devices[Device.D].views[View.WORD].segments == (
+        Segment(0, 599, 0x1000),
+        Segment(1000, 1311, 0x13E8),
+    )
+    assert p.devices[Device.X].views[View.BIT].segments == (Segment(0, 0o177, 0x0400),)
+
+
+def test_intersection_keeps_duplicate_key_segments():
+    p = intersect_profiles(PROFILE_ES_EX_SS, PROFILE_SE_EH3_SV2)
+    ranges = [(s.first, s.last) for s in p.devices[Device.D].views[View.WORD].segments]
+    assert ranges == [(0, 599), (1000, 1311)]
+
+
+def _stepped_profile(name: str, *, step: int, x_writable: bool) -> SeriesProfile:
+    return SeriesProfile(
+        name=name,
+        aliases=(),
+        d_ranges=((0, 9),),
+        d_split_boundary=None,
+        m_ranges=((0, 9),),
+        m_split_boundary=None,
+        x_max_octal=0o7,
+        y_max_octal=0o7,
+        guarded_d=((1, 2),),
+        guarded_m=(),
+        devices=MappingProxyType(
+            {
+                Device.D: DeviceSpec(
+                    MappingProxyType(
+                        {
+                            View.WORD: ViewSpec(
+                                3, True, (Segment(0, 9, 0x1000, step=step),), ((1, 2),)
+                            )
+                        }
+                    )
+                ),
+                Device.X: DeviceSpec(
+                    MappingProxyType(
+                        {View.BIT: ViewSpec(2, x_writable, (Segment(0, 0o7, 0x0400),))}
+                    )
+                ),
+            }
+        ),
+    )
+
+
+def test_intersection_uses_segments_not_flat_fields():
+    p = intersect_profiles(
+        _stepped_profile("a", step=2, x_writable=True),
+        _stepped_profile("b", step=2, x_writable=False),
+    )
+    assert p.devices[Device.D].views[View.WORD].segments == (Segment(0, 9, 0x1000, step=2),)
+    assert p.devices[Device.D].views[View.WORD].guards == ((1, 2),)
+    assert p.devices[Device.X].views[View.BIT].writable is False

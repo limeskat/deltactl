@@ -454,14 +454,97 @@ def _resolve_split_boundary(
     return None
 
 
+def _segment_key(segment: Segment, function: int) -> tuple[object, ...]:
+    """Identity of a segment's wire mapping; two views may only be merged when equal."""
+    return (
+        function,
+        segment.step,
+        segment.intercept,
+        segment.value_width,
+        segment.default_dtype,
+        segment.coalesce,
+    )
+
+
+def _intersect_segments(a: ViewSpec, b: ViewSpec) -> tuple[Segment, ...]:
+    """Intersect every pair of segments that share a wire-mapping key.
+
+    All pairs are considered rather than one pair per key: a view may hold
+    several disjoint segments with the same key, and each must survive.
+    """
+    out: list[Segment] = []
+    for sa in a.segments:
+        key = _segment_key(sa, a.function)
+        for sb in b.segments:
+            if _segment_key(sb, b.function) != key:
+                continue
+            first = max(sa.first, sb.first)
+            last = min(sa.last, sb.last)
+            if first > last:
+                continue
+            out.append(
+                Segment(
+                    first,
+                    last,
+                    sa.intercept + first * sa.step,
+                    step=sa.step,
+                    value_width=sa.value_width,
+                    default_dtype=sa.default_dtype,
+                    coalesce=sa.coalesce,
+                )
+            )
+    out.sort(key=lambda segment: segment.first)
+    return tuple(out)
+
+
+def _intersect_view_specs(a: ViewSpec, b: ViewSpec) -> ViewSpec | None:
+    """Intersected view spec, or ``None`` when no segment survives."""
+    segments = _intersect_segments(a, b)
+    if not segments:
+        return None
+    return ViewSpec(
+        a.function,
+        a.writable and b.writable,
+        segments,
+        _union_ranges(a.guards, b.guards),
+    )
+
+
+def _intersect_devices(
+    a: Mapping[Device, DeviceSpec],
+    b: Mapping[Device, DeviceSpec],
+) -> Mapping[Device, DeviceSpec]:
+    """Intersect the views both profiles expose, dropping empty devices and views."""
+    devices: dict[Device, DeviceSpec] = {}
+    for device, spec_a in a.items():
+        spec_b = b.get(device)
+        if spec_b is None:
+            continue
+        views: dict[View, ViewSpec] = {}
+        for view, view_a in spec_a.views.items():
+            view_b = spec_b.views.get(view)
+            if view_b is None:
+                continue
+            merged = _intersect_view_specs(view_a, view_b)
+            if merged is not None:
+                views[view] = merged
+        if views:
+            devices[device] = DeviceSpec(MappingProxyType(views))
+    return MappingProxyType(devices)
+
+
 def intersect_profiles(a: SeriesProfile, b: SeriesProfile) -> SeriesProfile:
     """Calculate the formal mathematical intersection of two SeriesProfiles.
 
-    Computes:
-    - Interval intersection of d_ranges and m_ranges
-    - min() of x_max_octal and y_max_octal
-    - Retains split boundary if present in either and within intersected range
-    - Union of guarded_d and guarded_m
+    Devices and views are intersected by pairing every segment of ``a`` with
+    every segment of ``b`` that shares its wire-mapping key
+    ``(function, step, intercept, value_width, default_dtype, coalesce)``.
+    Matching pairs intersect their index ranges; guards are unioned and a view
+    is writable only if both profiles allow writes.
+
+    The legacy flat fields are still computed until callers migrate to
+    ``devices``; they are passed explicitly so ``__post_init__`` does not
+    rebuild the device specs from them.
     """
     d_ranges = _intersect_ranges(a.d_ranges, b.d_ranges)
     m_ranges = _intersect_ranges(a.m_ranges, b.m_ranges)
@@ -479,4 +562,5 @@ def intersect_profiles(a: SeriesProfile, b: SeriesProfile) -> SeriesProfile:
         y_max_octal=min(a.y_max_octal, b.y_max_octal),
         guarded_d=_union_ranges(a.guarded_d, b.guarded_d),
         guarded_m=_union_ranges(a.guarded_m, b.guarded_m),
+        devices=_intersect_devices(a.devices, b.devices),
     )
