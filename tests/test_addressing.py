@@ -6,6 +6,7 @@ from deltactl.addressing import (
     normalize_tag,
     parse_raw,
     parse_tag,
+    raw_type_for,
     validate_span,
 )
 from deltactl.errors import (
@@ -218,3 +219,74 @@ def test_make_tag_stc_fixed_width_rules():
         make_tag("T0.v", dtype=DType.U32)
     with pytest.raises(DeltaValueError):
         make_tag("T0.v", dtype=DType.F32)
+
+
+@pytest.mark.parametrize(
+    "raw,raw_type,name",
+    [
+        ("0x0000", "s", "S0"),
+        ("0x0600", "tc", "T0.c"),
+        ("0x0600", "tv", "T0.v"),
+        ("0x0E00", "cc", "C0.c"),
+        ("0x0EC8", "cv", "C200.v"),
+        ("0x0EC9", "cv", "C201.v"),
+    ],
+)
+def test_parse_raw_new_types(raw, raw_type, name):
+    assert parse_raw(raw, raw_type).display == name
+
+
+def test_expand_view_ranges():
+    assert expand_tags(["T0.c-T2.c"]) == ["T0.c", "T1.c", "T2.c"]
+    assert expand_tags(["C200.v-C202.v"]) == ["C200.v", "C201.v", "C202.v"]
+
+
+def test_expand_rejects_mixed_width_range():
+    with pytest.raises(ValueError, match="width"):
+        expand_tags(["C199.v-C200.v"])
+
+
+def test_raw_type_for():
+    for tag_text, expected_raw_type in [
+        ("D0", "d"),
+        ("M0", "m"),
+        ("X0", "x"),
+        ("Y0", "y"),
+        ("S0", "s"),
+        ("T0.c", "tc"),
+        ("T0.v", "tv"),
+        ("C0.c", "cc"),
+        ("C200.v", "cv"),
+    ]:
+        tag = parse_tag(tag_text)
+        assert raw_type_for(tag) == expected_raw_type
+        assert raw_type_for(tag.address) == expected_raw_type
+
+
+def test_expand_view_range_trailing_dtype():
+    assert expand_tags(["T0.v-T2.v:u16"]) == ["T0.v:u16", "T1.v:u16", "T2.v:u16"]
+    with pytest.raises(ValueError):
+        expand_tags(["T0.c-T2.c:u16"])
+
+
+def test_expand_rejects_numeric_members_in_endpoints():
+    with pytest.raises(ValueError):
+        expand_tags(["D100.0-D102.0"])
+
+
+async def test_validate_planned_groups_new_types():
+    from deltactl.planning import ReadGroup
+    from deltactl.transport import AsyncDeltaPLC
+
+    plc = AsyncDeltaPLC("127.0.0.1")
+    # Valid groups with new types
+    plc._validate_planned_groups([ReadGroup(3, 0x0600, 1, (make_tag("T0.v"),))])
+    plc._validate_planned_groups([ReadGroup(1, 0x0600, 1, (make_tag("T0.c"),))])
+    plc._validate_planned_groups([ReadGroup(3, 0x0EC8, 2, (make_tag("C200.v"),))])
+    plc._validate_planned_groups([ReadGroup(1, 0x0000, 1, (make_tag("S0"),))])
+    # Empty tags group skips re-parse
+    plc._validate_planned_groups([ReadGroup(3, 0x0600, 1, ())])
+
+    # Out-of-bounds start fails validation
+    with pytest.raises(AddressRangeError):
+        plc._validate_planned_groups([ReadGroup(3, 0x0750, 1, (make_tag("T0.v"),))])

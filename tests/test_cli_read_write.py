@@ -73,6 +73,18 @@ def test_dtype_target_error_message(capsys):
     assert "--dtype is only valid for word tags, not M0" in err
 
 
+def test_cli_new_raw_types(capsys):
+    with pytest.raises(SystemExit):
+        main(["read", "--raw", "0x0600", "--raw-type", "tc", "--dtype", "u16"])
+    err = capsys.readouterr().err
+    assert "--dtype is only valid for word tags, not T0.c" in err
+
+    with pytest.raises(SystemExit):
+        main(["read", "--raw", "0x0600", "--raw-type", "invalid"])
+    err = capsys.readouterr().err
+    assert "invalid choice" in err
+
+
 def test_dry_run_no_io(capsys):
     assert (
         main(["write", "D100", "1", "--dry-run", "--host", "203.0.113.1", "--timeout", "0.01"]) == 0

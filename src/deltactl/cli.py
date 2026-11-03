@@ -47,7 +47,7 @@ from .transport import AsyncDeltaPLC
 __all__ = ["build_parser", "main"]
 
 _DTYPES = ("u16", "i16", "i32", "u32", "f32")
-_RAW_TYPES = ("d", "m", "x", "y")
+_RAW_TYPES = ("d", "m", "x", "y", "s", "tc", "tv", "cc", "cv")
 
 # argparse's negative-number matcher accepts decimal only, so `-0x10` and
 # friends are rewritten to decimal before parsing to keep them positional.
@@ -525,8 +525,6 @@ def _cmd_read(args: argparse.Namespace) -> int:
         parser.error("--raw cannot be combined with positional tags")
     if raw is None and raw_type is not None:
         parser.error("--raw-type requires --raw")
-    if raw is not None and dtype is not None and raw_type not in (None, "d"):
-        parser.error("--dtype is only valid with --raw-type d")
 
     host, port, unit, timeout, series, strict_series = _common_settings(
         args, parser, required=False
@@ -644,8 +642,6 @@ def _cmd_write(args: argparse.Namespace) -> int:
 
     if raw is None and raw_type is not None:
         parser.error("--raw-type requires --raw")
-    if raw is not None and dtype is not None and raw_type not in (None, "d"):
-        parser.error("--dtype is only valid with --raw-type d")
 
     host, port, unit, timeout, series, strict_series = _common_settings(
         args, parser, required=False

@@ -37,6 +37,7 @@ __all__ = [
     "normalize_tag",
     "parse_raw",
     "parse_tag",
+    "raw_type_for",
     "validate_span",
     "wire_for",
 ]
@@ -62,13 +63,19 @@ _VIEW_SUFFIXES: dict[View, str] = {
     View.WORD: ".v",
 }
 
-# Wire range → symbolic index for parse_raw: (lo, hi, index_base) per mapped block.
-_RAW_DOMAINS: dict[str, tuple[Device, tuple[tuple[int, int, int], ...]]] = {
-    "d": (Device.D, ((4096, 8191, 0), (36864, 44767, 4096))),
-    "m": (Device.M, ((2048, 3583, 0), (45056, 47615, 1536))),
-    "x": (Device.X, ((1024, 1279, 0),)),
-    "y": (Device.Y, ((1280, 1535, 0),)),
+# Modbus raw type token → (Device, View) mapping.
+_RAW_DOMAINS: dict[str, tuple[Device, View]] = {
+    "d": (Device.D, View.WORD),
+    "m": (Device.M, View.BIT),
+    "x": (Device.X, View.BIT),
+    "y": (Device.Y, View.BIT),
+    "s": (Device.S, View.BIT),
+    "tc": (Device.T, View.BIT),
+    "tv": (Device.T, View.WORD),
+    "cc": (Device.C, View.BIT),
+    "cv": (Device.C, View.WORD),
 }
+_DEVICE_VIEW_TO_RAW: dict[tuple[Device, View], str] = {v: k for k, v in _RAW_DOMAINS.items()}
 
 
 @dataclass(frozen=True)
@@ -330,6 +337,23 @@ def normalize_tag(text: str, profile: SeriesProfile | None = None) -> str:
     return parse_tag(text, profile=profile).display
 
 
+def _extract_address(target: TagAddress) -> Address:
+    if isinstance(target, Address):
+        return target
+    if hasattr(target, "address") and isinstance(target.address, Address):
+        return target.address
+    raise TypeError(f"expected Address or ParsedTag, got {type(target)!r}")
+
+
+def raw_type_for(address: TagAddress) -> str:
+    """Modbus raw type token corresponding to *address*."""
+    addr = _extract_address(address)
+    try:
+        return _DEVICE_VIEW_TO_RAW[(addr.device, addr.view)]
+    except KeyError:
+        raise ValueError(f"no raw type for {addr.device.value} {addr.view.value}") from None
+
+
 def parse_raw(
     value: str | int, raw_type: str = "d", profile: SeriesProfile | None = None
 ) -> Address:
@@ -340,40 +364,38 @@ def parse_raw(
     else:
         wire = int(value, 0)
     try:
-        device, ranges = _RAW_DOMAINS[raw_type.lower()]
+        device, view = _RAW_DOMAINS[raw_type.lower()]
     except (AttributeError, KeyError):
-        raise ValueError(f"unknown raw type {raw_type!r}: expected d|m|x|y") from None
-    for lo, hi, base in ranges:
+        valid = "|".join(_RAW_DOMAINS)
+        raise ValueError(f"unknown raw type {raw_type!r}: expected {valid}") from None
+    view_spec = prof.devices[device].views[view]
+    for segment in view_spec.segments:
+        lo = segment.wire_at(segment.first)
+        hi = segment.wire_at(segment.last) + segment.value_width - 1
         if lo <= wire <= hi:
-            index = base + (wire - lo)
-            view = _resolve_view(device, None)
-            segment, view_spec = _locate(device, index, view, prof)
-            if segment.wire_at(index) != wire:
-                raise AddressRangeError(
-                    f"raw wire address 0x{wire:04X} is not addressable on the {device.value} view"
-                )
-            return Address(
-                device=device,
-                index=index,
-                wire=wire,
-                block=_block_of(segment, view_spec),
-                view=view,
-                function=view_spec.function,
-                segment=segment,
-                bit=None,
+            if (wire - segment.intercept) % segment.step == 0:
+                index = (wire - segment.intercept) // segment.step
+                if segment.first <= index <= segment.last:
+                    return Address(
+                        device=device,
+                        index=index,
+                        wire=wire,
+                        block=_block_of(segment, view_spec),
+                        view=view,
+                        function=view_spec.function,
+                        segment=segment,
+                        bit=None,
+                    )
+            raise AddressRangeError(
+                f"raw wire address 0x{wire:04X} is not addressable on the {device.value} view"
             )
-    expected = " or ".join(f"0x{lo:04X}-0x{hi:04X}" for lo, hi, _ in ranges)
+    expected = " or ".join(
+        f"0x{s.wire_at(s.first):04X}-0x{s.wire_at(s.last) + s.value_width - 1:04X}"
+        for s in view_spec.segments
+    )
     raise AddressRangeError(
         f"raw wire address 0x{wire:04X} is outside the {device.value} ranges ({expected})"
     )
-
-
-def _extract_address(target: TagAddress) -> Address:
-    if isinstance(target, Address):
-        return target
-    if hasattr(target, "address") and isinstance(target.address, Address):
-        return target.address
-    raise TypeError(f"expected Address or ParsedTag, got {type(target)!r}")
 
 
 def validate_span(
@@ -534,25 +556,44 @@ def _expand_range(
 ) -> None:
     lo_text, _, hi_text = base.partition("-")
     for part in (lo_text, hi_text):
-        if not part or "." in part or ":" in part:
-            raise ValueError(
-                f"range {text!r}: endpoints must be bare tags without bit or "
-                f"dtype suffixes (e.g. D100-D109, X0-X17)"
-            )
+        if not part or ":" in part:
+            raise ValueError(f"range {text!r}: endpoints must not contain dtype suffixes")
     try:
         lo = parse_tag(lo_text, profile=profile)
         hi = parse_tag(hi_text, profile=profile)
     except DeltaAddressError as exc:
         raise ValueError(
-            f"invalid range {text!r}: both endpoints must be valid bare tags ({exc})"
+            f"invalid range {text!r}: both endpoints must be valid tags ({exc})"
         ) from None
+    if lo.address.bit is not None or hi.address.bit is not None:
+        raise ValueError(f"range {text!r}: bit offsets are not allowed in range endpoints")
     lo_addr, hi_addr = lo.address, hi.address
     if lo_addr.device is not hi_addr.device:
         raise ValueError(
             f"range {text!r} spans multiple devices: {lo_addr.display} and {hi_addr.display}"
         )
-    if dtype is not None and lo_addr.device is not Device.D:
-        raise ValueError(f"range {text!r}: dtype suffixes are only valid on D ranges")
+    if lo_addr.view is not hi_addr.view:
+        raise ValueError(
+            f"range {text!r} spans multiple views: {lo_addr.display} and {hi_addr.display}"
+        )
+    if lo.value_width != hi.value_width:
+        raise ValueError(
+            f"range {text!r} spans mixed value widths: {lo.value_width} != {hi.value_width}"
+        )
+    if dtype is not None:
+        if lo_addr.view is not View.WORD:
+            raise ValueError(f"range {text!r}: dtype suffixes are only valid on word ranges")
+        if lo.address.segment.default_dtype is not None:
+            if dtype == "f32":
+                raise ValueError(
+                    f"range {text!r}: f32 is not allowed on fixed-width {lo_addr.device.value} values"
+                )
+            dtype_width = 2 if dtype in ("i32", "u32", "f32") else 1
+            if dtype_width != lo.value_width:
+                raise ValueError(
+                    f"range {text!r}: dtype {dtype} width {dtype_width} does not match "
+                    f"segment value_width {lo.value_width}"
+                )
     if hi_addr.index < lo_addr.index:
         raise ValueError(f"range {text!r} is reversed: {lo_addr.display} > {hi_addr.display}")
     count = hi_addr.index - lo_addr.index + 1
@@ -561,5 +602,14 @@ def _expand_range(
     device = lo_addr.device
     prof = profile or DEFAULT_PROFILE
     for index in range(lo_addr.index, hi_addr.index + 1):
-        _locate(device, index, None, prof)
-        _add_unique(_format_tag(device, index, dtype=dtype), out, seen, limit)
+        seg, _ = _locate(device, index, lo_addr.view, prof)
+        if seg.value_width != lo.value_width:
+            raise ValueError(
+                f"range {text!r} spans mixed value widths: segment width {seg.value_width} != {lo.value_width}"
+            )
+        _add_unique(
+            _format_tag(device, index, view=lo_addr.view, dtype=dtype),
+            out,
+            seen,
+            limit,
+        )

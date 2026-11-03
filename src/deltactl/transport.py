@@ -24,7 +24,7 @@ from typing import Any
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ConnectionException, ModbusException, ModbusIOException
 
-from .addressing import Address, View, parse_raw, validate_span
+from .addressing import Address, View, parse_raw, raw_type_for, validate_span
 from .errors import (
     DeltaConnectionError,
     DeltaModbusException,
@@ -515,22 +515,17 @@ class AsyncDeltaPLC:
         for group in groups:
             for tag in group.tags:
                 validate_span(tag.address, tag.width, write=False, profile=prof)
-            raw_type: str | None = None
-            if group.function == 3:
-                raw_type = "d"
-            elif group.function == 2:
-                raw_type = "x"
-            elif group.function == 1:
-                raw_type = "y" if 1280 <= group.start <= 1535 else "m"
-            if raw_type is not None:
-                start_addr = parse_raw(group.start, raw_type=raw_type, profile=prof)
-                validate_span(
-                    start_addr,
-                    group.count,
-                    write=False,
-                    allow_block_crossing=True,
-                    profile=prof,
-                )
+            if not group.tags:
+                continue
+            raw_type = raw_type_for(group.tags[0].address)
+            start_addr = parse_raw(group.start, raw_type=raw_type, profile=prof)
+            validate_span(
+                start_addr,
+                group.count,
+                write=False,
+                allow_block_crossing=True,
+                profile=prof,
+            )
 
     async def read_planned(
         self, groups: Sequence[ReadGroup], *, retries: int | None = None
