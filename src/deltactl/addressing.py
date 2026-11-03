@@ -57,6 +57,11 @@ _TAG_RE = re.compile(
 
 _DTYPES = frozenset({"u16", "i16", "i32", "u32", "f32"})
 
+_VIEW_SUFFIXES: dict[View, str] = {
+    View.BIT: ".c",
+    View.WORD: ".v",
+}
+
 # Wire range → symbolic index for parse_raw: (lo, hi, index_base) per mapped block.
 _RAW_DOMAINS: dict[str, tuple[Device, tuple[tuple[int, int, int], ...]]] = {
     "d": (Device.D, ((4096, 8191, 0), (36864, 44767, 4096))),
@@ -148,10 +153,8 @@ def _format_tag(
     digits = f"{index:o}" if device in _OCTAL_DEVICES else str(index)
     text = f"{device.value}{digits}"
     if len(DEVICE_VIEWS.get(device, ())) > 1:
-        if view is View.BIT:
-            text = f"{text}.c"
-        elif view is View.WORD:
-            text = f"{text}.v"
+        if view is not None and view in _VIEW_SUFFIXES:
+            text = f"{text}{_VIEW_SUFFIXES[view]}"
     elif bit is not None:
         text = f"{text}.{bit}"
     if dtype is not None:
@@ -262,7 +265,7 @@ def parse_tag(text: str, profile: SeriesProfile | None = None) -> ParsedTag:
 
     if is_multiview:
         if member_text is None:
-            suffixes = "/".join(f".{v.value[0]}" for v in views)
+            suffixes = "/".join(_VIEW_SUFFIXES[v] for v in views)
             raise AddressSyntaxError(
                 f"{text!r}: {device.value} has multiple views; a view suffix ({suffixes}) is required"
             )

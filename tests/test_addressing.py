@@ -164,6 +164,15 @@ def test_new_tags_reject(text):
         parse_tag(text)
 
 
+@pytest.mark.parametrize("tag", ["T0", "C0"])
+def test_bare_multiview_tags_suggest_c_and_v(tag):
+    with pytest.raises(AddressSyntaxError) as exc_info:
+        parse_tag(tag)
+    msg = str(exc_info.value)
+    assert ".c" in msg and ".v" in msg
+    assert ".b" not in msg and ".w" not in msg
+
+
 def test_c200_defaults_to_i32():
     tag = make_tag("C200.v")
     assert tag.dtype is DType.I32 and tag.width == 2 and tag.address.wire == 0x0EC8
