@@ -124,3 +124,8 @@ def test_slot_counters_duplicate_reads():
     tags = make_tags(["C200.v", "C200.v"])
     groups = plan_reads(tags)
     assert [(g.start, g.count) for g in groups] == [(0x0EC8, 2), (0x0EC8, 2)]
+
+
+def test_address_coalesce_property():
+    assert make_tag("C200.v").address.coalesce is False
+    assert make_tag("D100").address.coalesce is True

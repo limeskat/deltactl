@@ -24,11 +24,6 @@ from .errors import BlockBoundaryError, DeltaValueError
 from .packing import DType
 from .profiles import DEFAULT_PROFILE, SeriesProfile
 
-if not hasattr(Address, "coalesce"):
-    Address.coalesce = property(lambda self: self.segment.coalesce)  # type: ignore[attr-defined]
-if not hasattr(Address, "step"):
-    Address.step = property(lambda self: self.segment.step)  # type: ignore[attr-defined]
-
 __all__ = [
     "Chunk",
     "ReadGroup",

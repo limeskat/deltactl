@@ -96,6 +96,10 @@ class Address:
         """Canonical base tag: uppercase device, no leading zeros, octal for X/Y."""
         return _format_tag(self.device, self.index, view=self.view, bit=self.bit)
 
+    @property
+    def coalesce(self) -> bool:
+        return self.segment.coalesce
+
 
 @dataclass(frozen=True)
 class ParsedTag:
@@ -143,7 +147,7 @@ class ParsedTag:
 
     @property
     def coalesce(self) -> bool:
-        return self.address.segment.coalesce
+        return self.address.coalesce
 
 
 TagAddress = Address | ParsedTag
