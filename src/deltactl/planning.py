@@ -24,6 +24,11 @@ from .errors import BlockBoundaryError, DeltaValueError
 from .packing import DType
 from .profiles import DEFAULT_PROFILE, SeriesProfile
 
+if not hasattr(Address, "coalesce"):
+    Address.coalesce = property(lambda self: self.segment.coalesce)  # type: ignore[attr-defined]
+if not hasattr(Address, "step"):
+    Address.step = property(lambda self: self.segment.step)  # type: ignore[attr-defined]
+
 __all__ = [
     "Chunk",
     "ReadGroup",
@@ -179,6 +184,13 @@ def plan_reads(
         span_end = 0
         group_block = -1
         for start, end, order, tag in items:
+            if not tag.address.coalesce:
+                if chunk:
+                    _append_group(groups, function, group_start, span_end, chunk)
+                    chunk = []
+                _append_group(groups, function, start, end, [(start, end, order, tag)])
+                continue
+
             tag_block = tag.address.block
             if (
                 chunk
@@ -254,6 +266,20 @@ def plan_chunks(
 
     prof = profile or DEFAULT_PROFILE
     device = addr.device
+
+    if not addr.coalesce:
+        total = value_count * addr.segment.value_width
+        validate_span(addr, total, write=False, allow_block_crossing=True, profile=prof)
+        return [
+            Chunk(
+                start=addr.segment.wire_at(addr.index + i),
+                count=addr.segment.value_width,
+                first=i,
+                values=1,
+            )
+            for i in range(value_count)
+        ]
+
     total = value_count * value_width if addr.view is View.WORD else value_count
     validate_span(addr, total, write=False, allow_block_crossing=True, profile=prof)
     cap = max_registers if addr.view is View.WORD else max_bits
@@ -265,12 +291,12 @@ def plan_chunks(
     for i in range(value_count):
         low = addr.index + i * value_width
         high = low + value_width - 1
-        value_block = block_for(device, low, profile=prof)
-        if value_block != block_for(device, high, profile=prof):
+        value_block = block_for(device, low, view=addr.view, profile=prof)
+        if value_block != block_for(device, high, view=addr.view, profile=prof):
             split = next(
                 idx
                 for idx in range(low + 1, high + 1)
-                if block_for(device, idx, profile=prof) != value_block
+                if block_for(device, idx, view=addr.view, profile=prof) != value_block
             )
             raise BlockBoundaryError(
                 f"value {i} at {device.value}{low} spanning {value_width} "
@@ -280,7 +306,9 @@ def plan_chunks(
         if values and ((values + 1) * value_width > cap or value_block != first_block):
             chunks.append(
                 Chunk(
-                    start=wire_for(device, addr.index + first * value_width, profile=prof),
+                    start=wire_for(
+                        device, addr.index + first * value_width, view=addr.view, profile=prof
+                    ),
                     count=values * value_width,
                     first=first,
                     values=values,
@@ -293,7 +321,9 @@ def plan_chunks(
     if values:
         chunks.append(
             Chunk(
-                start=wire_for(device, addr.index + first * value_width, profile=prof),
+                start=wire_for(
+                    device, addr.index + first * value_width, view=addr.view, profile=prof
+                ),
                 count=values * value_width,
                 first=first,
                 values=values,

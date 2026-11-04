@@ -79,3 +79,48 @@ def test_make_tag_defaults_and_conflicts():
         make_tag("M0", DType.U16)
     with pytest.raises(DeltaValueError):
         make_tag("D100.3", DType.U16)
+
+
+def test_slot_counters_are_never_merged():
+    tags = make_tags(["C200.v", "C201.v"])
+    groups = plan_reads(tags)
+    assert [(g.start, g.count) for g in groups] == [(0x0EC8, 2), (0x0EC9, 2)]
+
+
+def test_c16_neighbour_is_not_merged_into_slot():
+    tags = make_tags(["C199.v", "C200.v"])
+    groups = plan_reads(tags)
+    assert len(groups) == 2
+
+
+def test_plan_chunks_advances_slots_by_index():
+    addr = make_tag("C200.v").address
+    chunks = plan_chunks(addr, 2, 3)
+    assert [(c.start, c.count, c.first, c.values) for c in chunks] == [
+        (0x0EC8, 2, 0, 1),
+        (0x0EC9, 2, 1, 1),
+        (0x0ECA, 2, 2, 1),
+    ]
+
+
+def test_slot_counters_surrounded_by_coalescing_tags():
+    tags = make_tags(["C198.v", "C199.v", "C200.v", "C201.v", "D0", "D1"])
+    groups = plan_reads(tags)
+    assert [(g.start, g.count) for g in groups] == [
+        (0x0EC6, 2),
+        (0x0EC8, 2),
+        (0x0EC9, 2),
+        (0x1000, 2),
+    ]
+
+
+def test_slot_chunks_out_of_bounds():
+    addr = make_tag("C254.v").address
+    with pytest.raises(AddressRangeError):
+        plan_chunks(addr, 2, 2)
+
+
+def test_slot_counters_duplicate_reads():
+    tags = make_tags(["C200.v", "C200.v"])
+    groups = plan_reads(tags)
+    assert [(g.start, g.count) for g in groups] == [(0x0EC8, 2), (0x0EC8, 2)]
