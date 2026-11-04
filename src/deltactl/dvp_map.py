@@ -12,6 +12,11 @@ from __future__ import annotations
 from .addressing import Device, wire_for
 
 __all__ = [
+    "C16_COUNT",
+    "C32_FIRST",
+    "C32_LAST",
+    "C32_WIRE0",
+    "C_WIRE0",
     "D_COUNT",
     "D_SEGMENT_SPANS",
     "D_WIRE0",
@@ -20,6 +25,10 @@ __all__ = [
     "M_WIRE0",
     "PDU_CAPS",
     "READ_RANGES",
+    "S_COUNT",
+    "S_WIRE0",
+    "T_COUNT",
+    "T_WIRE0",
     "WRITE_GUARDS",
     "XY_COUNT",
     "X_WIRE0",
@@ -34,10 +43,19 @@ D_WIRE0 = 0x1000  # D0-D4095
 M_WIRE0 = 0x0800  # M0-M1535
 X_WIRE0 = 0x0400  # X0-X377 (read-only)
 Y_WIRE0 = 0x0500  # Y0-Y377
+S_WIRE0 = 0x0000  # S0-S1023
+T_WIRE0 = 0x0600  # T0-T255
+C_WIRE0 = 0x0E00  # C0-C199
+C32_WIRE0 = 0x0EC8  # C200-C254
 
 D_COUNT = 12000  # D0-D11999
 M_COUNT = 4096  # M0-M4095
 XY_COUNT = 0o400  # X0/Y0-Y377
+S_COUNT = 1024  # S0-S1023
+T_COUNT = 256  # T0-T255
+C16_COUNT = 200  # C0-C199
+C32_FIRST = 200  # C200
+C32_LAST = 254  # C254
 
 #: Modbus read function per device: holding registers (D), discrete inputs (X),
 #: coils (M/Y).  The simulator context accepts the same codes for writes.
@@ -77,9 +95,22 @@ PDU_CAPS: dict[int, int] = {1: 256, 2: 256, 3: 100, 15: 256, 16: 100}
 
 #: Wire spans that may be read/written; anything else is address 02.
 READ_RANGES: dict[int, tuple[tuple[int, int], ...]] = {
-    1: ((M_WIRE0, 0x0DFF), (0xB000, 0xB9FF), (Y_WIRE0, 0x05FF)),
+    1: (
+        (M_WIRE0, 0x0DFF),
+        (0xB000, 0xB9FF),
+        (Y_WIRE0, 0x05FF),
+        (0x0000, 0x03FF),
+        (0x0600, 0x06FF),
+        (0x0E00, 0x0EFE),
+    ),
     2: ((X_WIRE0, 0x04FF),),
-    3: ((D_WIRE0, 0x1FFF), (0x9000, 0xAEDF)),
+    3: (
+        (D_WIRE0, 0x1FFF),
+        (0x9000, 0xAEDF),
+        (0x0600, 0x06FF),
+        (0x0E00, 0x0EC7),
+        (0x0EC8, 0x0EFF),
+    ),
     5: ((M_WIRE0, 0x0DFF), (0xB000, 0xB9FF), (Y_WIRE0, 0x05FF)),
     6: ((D_WIRE0, 0x1FFF), (0x9000, 0xAEDF)),
     15: ((M_WIRE0, 0x0DFF), (0xB000, 0xB9FF), (Y_WIRE0, 0x05FF)),

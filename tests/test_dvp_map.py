@@ -7,6 +7,11 @@ from pymodbus.client import AsyncModbusTcpClient
 
 from deltactl.addressing import Device, parse_tag
 from deltactl.dvp_map import (
+    C16_COUNT,
+    C32_FIRST,
+    C32_LAST,
+    C32_WIRE0,
+    C_WIRE0,
     D_COUNT,
     D_SEGMENT_SPANS,
     D_WIRE0,
@@ -15,6 +20,10 @@ from deltactl.dvp_map import (
     M_WIRE0,
     PDU_CAPS,
     READ_RANGES,
+    S_COUNT,
+    S_WIRE0,
+    T_COUNT,
+    T_WIRE0,
     WRITE_GUARDS,
     X_WIRE0,
     XY_COUNT,
@@ -36,12 +45,25 @@ def test_wire_map_matches_phase_one():
 def test_counts_and_caps():
     assert D_COUNT == 12000
     assert M_COUNT == 4096
+    assert S_COUNT == 1024
+    assert T_COUNT == 256
+    assert C16_COUNT == 200
+    assert (C32_FIRST, C32_LAST) == (200, 254)
     assert PDU_CAPS[3] == 100
     assert READ_RANGES[3][0] == (0x1000, 0x1FFF)
 
 
 def test_wire_anchors_segments_and_guards():
-    assert (D_WIRE0, M_WIRE0, X_WIRE0, Y_WIRE0) == (0x1000, 0x0800, 0x0400, 0x0500)
+    assert (D_WIRE0, M_WIRE0, X_WIRE0, Y_WIRE0, S_WIRE0, T_WIRE0, C_WIRE0, C32_WIRE0) == (
+        0x1000,
+        0x0800,
+        0x0400,
+        0x0500,
+        0x0000,
+        0x0600,
+        0x0E00,
+        0x0EC8,
+    )
     assert XY_COUNT == 0o400
     assert D_SEGMENT_SPANS[0] == (0, 1000, False)
     assert D_SEGMENT_SPANS[-1] == (4096, 12000, False)
@@ -147,3 +169,14 @@ def test_set_values_rejects_out_of_range_register():
             server.set_values("D500", 70000)
     finally:
         server.stop()
+
+
+def test_new_ranges_are_readable():
+    assert READ_RANGES[3] == (
+        (0x1000, 0x1FFF),
+        (0x9000, 0xAEDF),
+        (0x0600, 0x06FF),
+        (0x0E00, 0x0EC7),
+        (0x0EC8, 0x0EFF),
+    )
+    assert (0x0000, 0x03FF) in READ_RANGES[1]

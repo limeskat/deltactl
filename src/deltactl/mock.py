@@ -21,12 +21,18 @@ from typing import Any, cast
 
 from pymodbus.constants import ExcCodes
 from pymodbus.pdu import ExceptionResponse, ModbusPDU
+from pymodbus.pdu.register_message import ReadHoldingRegistersResponse
 from pymodbus.server import ModbusTcpServer
 from pymodbus.server.requesthandler import ServerRequestHandler
 from pymodbus.simulator import DataType, SimData, SimDevice
 
 from .addressing import Device, View, parse_tag, wire_for
 from .dvp_map import (
+    C16_COUNT,
+    C32_FIRST,
+    C32_LAST,
+    C32_WIRE0,
+    C_WIRE0,
     D_COUNT,
     D_SEGMENT_SPANS,
     D_WIRE0,
@@ -34,10 +40,12 @@ from .dvp_map import (
     M_SEGMENT_SPANS,
     PDU_CAPS,
     READ_RANGES,
+    S_COUNT,
+    T_COUNT,
     WRITE_GUARDS,
     XY_COUNT,
-    function_code_for,
 )
+from .packing import DType, encode_value
 
 __all__ = ["MockServer", "MockStats"]
 
@@ -110,7 +118,7 @@ def _make_scan_action(t0: float) -> _SimAction:
     return action
 
 
-def _default_values() -> dict[Device, list[Any]]:
+def _default_values() -> dict[tuple[Device, View], list[Any]]:
     """Full-index value table with the bench defaults applied.
 
     ``D1000=200, D1001=0x7C21, D1002=15872`` (firmware id), ``D1010=4,
@@ -118,37 +126,66 @@ def _default_values() -> dict[Device, list[Any]]:
     (run flag); the fault code ``D1067=0`` and fault flag ``M1067=False`` are
     the zero defaults.
     """
-    values: dict[Device, list[Any]] = {
-        Device.D: [0] * D_COUNT,
-        Device.M: [False] * M_COUNT,
-        Device.X: [False] * XY_COUNT,
-        Device.Y: [False] * XY_COUNT,
+    values: dict[tuple[Device, View], list[Any]] = {
+        (Device.D, View.WORD): [0] * D_COUNT,
+        (Device.M, View.BIT): [False] * M_COUNT,
+        (Device.X, View.BIT): [False] * XY_COUNT,
+        (Device.Y, View.BIT): [False] * XY_COUNT,
+        (Device.S, View.BIT): [False] * S_COUNT,
+        (Device.T, View.BIT): [False] * T_COUNT,
+        (Device.T, View.WORD): [0] * T_COUNT,
+        (Device.C, View.BIT): [False] * (C32_LAST + 1),
+        (Device.C, View.WORD): [0] * (C32_LAST + 1),
     }
-    values[Device.D][1000:1003] = [200, 0x7C21, 15872]  # firmware id
-    values[Device.D][1010:1013] = [4, 1, 12]  # scan time
-    values[Device.D][1121] = 1  # station id
-    values[Device.M][1000] = True  # run flag
+    values[(Device.D, View.WORD)][1000:1003] = [200, 0x7C21, 15872]  # firmware id
+    values[(Device.D, View.WORD)][1010:1013] = [4, 1, 12]  # scan time
+    values[(Device.D, View.WORD)][1121] = 1  # station id
+    values[(Device.M, View.BIT)][1000] = True  # run flag
     # D1067 fault code and M1067 fault flag already default to 0/False.
     return values
 
 
-def _overlay_seed(values: dict[Device, list[Any]], seed: Mapping[str, int | bool]) -> None:
+def _overlay_seed(
+    values: dict[tuple[Device, View], list[Any]], seed: Mapping[str, int | bool]
+) -> None:
     """Apply user seeds, rejecting tags the bench cannot seed."""
     for key, value in seed.items():
         parsed = parse_tag(key)
         address = parsed.address
         if parsed.dtype is not None or address.bit is not None:
             raise ValueError(f"seed {key!r}: use a bare tag without bit or dtype suffix")
-        if address.view is View.WORD:
-            if not isinstance(value, int) or not 0 <= value <= 0xFFFF:
-                raise ValueError(f"seed {key!r}: D values must be integers in 0..65535")
-        elif not isinstance(value, bool):
-            raise ValueError(f"seed {key!r}: M/X/Y values must be booleans")
-        values[address.device][address.index] = value
+        if address.view is View.BIT:
+            if not isinstance(value, bool):
+                raise ValueError(f"seed {key!r}: {address.device.value} values must be booleans")
+            values[(address.device, View.BIT)][address.index] = value
+        else:
+            if address.device is Device.C and address.index >= C32_FIRST:
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not (-(2**31) <= value <= 2**32 - 1)
+                ):
+                    raise ValueError(
+                        f"seed {key!r}: C 32-bit values must be integers in -2147483648..4294967295"
+                    )
+                values[(Device.C, View.WORD)][address.index] = (
+                    value if value < 2**31 else value - 2**32
+                )
+            else:
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not 0 <= value <= 0xFFFF
+                ):
+                    raise ValueError(
+                        f"seed {key!r}: {address.device.value} values must be integers in 0..65535"
+                    )
+                values[(address.device, View.WORD)][address.index] = int(value)
 
 
 def _segments(
     device: Device,
+    view: View,
     values: list[Any],
     spans: tuple[tuple[int, int, bool], ...],
     datatype: DataType,
@@ -156,7 +193,7 @@ def _segments(
     """One SimData per contiguous span, addressed by wire number."""
     return [
         SimData(
-            address=wire_for(device, lo),
+            address=wire_for(device, lo, view=view),
             count=1,
             values=list(values[lo:hi]),
             datatype=datatype,
@@ -174,7 +211,7 @@ def _build_device(
     fixed_scan_ms: float | None = None,
     station_id: int | None = None,
     action: _SimAction | None = None,
-) -> SimDevice:
+) -> tuple[SimDevice, dict[tuple[Device, View], list[Any]]]:
     """Build the single wildcard-unit (id 0) DVP device.
 
     Defaults, seeds, then the `fault_code` / `plc_stop` / `fixed_scan_ms`
@@ -186,28 +223,65 @@ def _build_device(
     if seed:
         _overlay_seed(values, seed)
     if fault_code is not None:
-        values[Device.D][1067] = fault_code
-        values[Device.M][1067] = True
+        values[(Device.D, View.WORD)][1067] = fault_code
+        values[(Device.M, View.BIT)][1067] = True
     if plc_stop:
-        values[Device.M][1000] = False
+        values[(Device.M, View.BIT)][1000] = False
     if fixed_scan_ms is not None:
         scan = round(fixed_scan_ms * 10)
-        values[Device.D][1010:1013] = [scan, scan, scan]
+        values[(Device.D, View.WORD)][1010:1013] = [scan, scan, scan]
     if station_id is not None:
         if not (0 <= station_id <= 65535):
             raise ValueError(f"station_id {station_id} out of range 0..65535")
-        values[Device.D][1121] = station_id
+        values[(Device.D, View.WORD)][1121] = station_id
 
-    co = _segments(Device.M, values[Device.M], M_SEGMENT_SPANS, DataType.BITS)
-    co += _segments(Device.Y, values[Device.Y], ((0, XY_COUNT, False),), DataType.BITS)
+    co = _segments(
+        Device.S, View.BIT, values[(Device.S, View.BIT)], ((0, S_COUNT, False),), DataType.BITS
+    )
+    co += _segments(
+        Device.Y, View.BIT, values[(Device.Y, View.BIT)], ((0, XY_COUNT, False),), DataType.BITS
+    )
+    co += _segments(
+        Device.T, View.BIT, values[(Device.T, View.BIT)], ((0, T_COUNT, False),), DataType.BITS
+    )
+    co += _segments(
+        Device.M, View.BIT, values[(Device.M, View.BIT)], M_SEGMENT_SPANS, DataType.BITS
+    )
+    co += _segments(
+        Device.C,
+        View.BIT,
+        values[(Device.C, View.BIT)],
+        ((0, C32_LAST + 1, False),),
+        DataType.BITS,
+    )
     co.sort(key=lambda entry: entry.address)
-    di = _segments(Device.X, values[Device.X], ((0, XY_COUNT, True),), DataType.BITS)
-    hr = _segments(Device.D, values[Device.D], D_SEGMENT_SPANS, DataType.REGISTERS)
+
+    di = _segments(
+        Device.X, View.BIT, values[(Device.X, View.BIT)], ((0, XY_COUNT, True),), DataType.BITS
+    )
+
+    hr = _segments(
+        Device.T,
+        View.WORD,
+        values[(Device.T, View.WORD)],
+        ((0, T_COUNT, False),),
+        DataType.REGISTERS,
+    )
+    hr += _segments(
+        Device.C,
+        View.WORD,
+        values[(Device.C, View.WORD)],
+        ((0, C16_COUNT, False),),
+        DataType.REGISTERS,
+    )
+    hr += _segments(
+        Device.D, View.WORD, values[(Device.D, View.WORD)], D_SEGMENT_SPANS, DataType.REGISTERS
+    )
     hr.sort(key=lambda entry: entry.address)
     ir = [SimData(address=0, count=1, datatype=DataType.INVALID)]
 
     # A tuple simdata forces pymodbus into per-bit (wire) addressing.
-    return SimDevice(id=0, simdata=(co, di, hr, ir), action=action)
+    return SimDevice(id=0, simdata=(co, di, hr, ir), action=action), values
 
 
 # --------------------------------------------------------------------------- server
@@ -220,12 +294,14 @@ class _MockHandler(ServerRequestHandler):
         self,
         owner: ModbusTcpServer,
         stats: MockStats,
+        values: dict[tuple[Device, View], list[Any]],
         *,
         reject: bool = False,
         counted: bool = False,
     ) -> None:
         super().__init__(owner, owner.trace_packet, owner.trace_pdu, owner.trace_connect)
         self.stats = stats
+        self.values = values
         self.reject = reject
         self.counted = counted
 
@@ -248,6 +324,12 @@ class _MockHandler(ServerRequestHandler):
         cap = PDU_CAPS.get(fc)
         if cap is not None and count > cap:
             return ExcCodes.ILLEGAL_VALUE
+        if (
+            fc == 3
+            and _overlaps(((C32_WIRE0, 0x0EFF),), address, count)
+            and not (C32_WIRE0 <= address <= 0x0EFE and count == 2)
+        ):
+            return ExcCodes.ILLEGAL_VALUE
         ranges = READ_RANGES.get(fc)
         if ranges is not None and not _within(ranges, address, count):
             return ExcCodes.ILLEGAL_ADDRESS
@@ -264,6 +346,15 @@ class _MockHandler(ServerRequestHandler):
         response.dev_id = pdu.dev_id
         self.server_send(response, self.last_addr)
 
+    def _send_registers(self, pdu: ModbusPDU, registers: list[int]) -> None:
+        """Answer `pdu` with holding registers response."""
+        response = ReadHoldingRegistersResponse(
+            registers=registers,
+            dev_id=pdu.dev_id,
+            transaction_id=pdu.transaction_id,
+        )
+        self.server_send(response, self.last_addr)
+
     async def handle_request(self) -> None:
         """Pre-check the request, then defer to the simulator datastore."""
         pdu = self.last_pdu
@@ -277,6 +368,12 @@ class _MockHandler(ServerRequestHandler):
         if code is not None:
             self._send_exception(pdu, fc, code)
             return
+        if fc == 3 and count == 2 and C32_WIRE0 <= pdu.address <= 0x0EFE:
+            c_index = pdu.address - C_WIRE0
+            val = self.values[(Device.C, View.WORD)][c_index]
+            regs = encode_value(val, DType.I32)
+            self._send_registers(pdu, regs)
+            return
         if fc in _WRITE_FCS:
             self.stats.writes += 1
         await super().handle_request()
@@ -289,20 +386,22 @@ class _MockTcpServer(ModbusTcpServer):
         self,
         context: SimDevice,
         *,
+        values: dict[tuple[Device, View], list[Any]],
         stats: MockStats,
         max_clients: int,
         **kwargs: Any,
     ) -> None:
         super().__init__(context, **kwargs)
+        self.values = values
         self.stats = stats
         self.max_clients = max_clients
 
     def callback_new_connection(self) -> _MockHandler:
         """Return a handler, refusing connections past ``max_clients``."""
         if self.stats.clients >= self.max_clients:
-            return _MockHandler(self, self.stats, reject=True, counted=False)
+            return _MockHandler(self, self.stats, self.values, reject=True, counted=False)
         self.stats.clients += 1
-        return _MockHandler(self, self.stats, reject=False, counted=True)
+        return _MockHandler(self, self.stats, self.values, reject=False, counted=True)
 
 
 class MockServer:
@@ -334,7 +433,7 @@ class MockServer:
         self.stats = MockStats()
         self.address: tuple[str, int] = (host, port)
         self._action = _make_scan_action(time.monotonic()) if live_scan else None
-        self._device = _build_device(
+        self._device, self._values = _build_device(
             seed=seed,
             fault_code=fault_code,
             plc_stop=plc_stop,
@@ -374,6 +473,7 @@ class MockServer:
         """Bind the socket and return; the caller runs the loop."""
         self._server = _MockTcpServer(
             self._device,
+            values=self._values,
             stats=self.stats,
             max_clients=self.max_clients,
             address=(self.host, self.port),
@@ -444,14 +544,37 @@ class MockServer:
             raise ValueError(f"set_values {tag!r}: use a bare tag without bit or dtype suffix")
         raw: list[int] | list[bool]
         if address.view is View.WORD:
-            if not isinstance(value, int) or not 0 <= value <= 0xFFFF:
-                raise ValueError(f"set_values {tag!r}: D values must be integers in 0..65535")
-            raw = [int(value)]
+            if address.device is Device.C and address.index >= C32_FIRST:
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not (-(2**31) <= value <= 2**32 - 1)
+                ):
+                    raise ValueError(
+                        f"set_values {tag!r}: C 32-bit values must be integers in -2147483648..4294967295"
+                    )
+                self._values[(Device.C, View.WORD)][address.index] = (
+                    value if value < 2**31 else value - 2**32
+                )
+                return
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 0xFFFF:
+                raise ValueError(
+                    f"set_values {tag!r}: {address.device.value} values must be integers in 0..65535"
+                )
+            stored = int(value)
+            raw = [stored]
         else:
-            raw = [bool(value)]
-        fc = function_code_for(address.device)
+            if not isinstance(value, bool):
+                raise ValueError(
+                    f"set_values {tag!r}: {address.device.value} values must be booleans"
+                )
+            stored = value
+            raw = [stored]
+        fc = address.function
         future = asyncio.run_coroutine_threadsafe(
             self._server.context.async_setValues(0, fc, address.wire, raw),
             self._loop,
         )
-        future.result(timeout=5)
+        res = future.result(timeout=5)
+        if res is None:
+            self._values[(address.device, address.view)][address.index] = stored

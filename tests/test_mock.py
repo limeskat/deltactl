@@ -1,9 +1,13 @@
 import asyncio
+from contextlib import contextmanager
 
 import pytest
 from pymodbus.client import AsyncModbusTcpClient
 
+from deltactl import DeltaPLC
+from deltactl.errors import DeltaModbusException, ReadOnlyAddressError
 from deltactl.mock import MockServer
+from deltactl.planning import ReadGroup, make_tag
 
 
 @pytest.fixture
@@ -193,3 +197,148 @@ def test_set_values_runtime_update():
         asyncio.run(scenario())
     finally:
         server.stop()
+
+
+@contextmanager
+def _running(**kwargs):
+    server = MockServer(port=0, **kwargs)
+    server.start()
+    try:
+        yield server
+    finally:
+        server.stop()
+
+
+def test_timer_and_counter_round_trip():
+    with (
+        _running(
+            seed={
+                "T0.v": 42,
+                "T0.c": True,
+                "C0.v": 7,
+                "C0.c": False,
+                "S3": True,
+            }
+        ) as mock,
+        DeltaPLC(mock.address[0], port=mock.address[1]) as plc,
+    ):
+        assert plc.read("T0.v") == 42
+        assert plc.read("T0.c") is True
+        assert plc.read("C0.v") == 7
+        assert plc.read("C0.c") is False
+        assert plc.read("S3") is True
+
+
+def test_c32_slot_reads_are_address_based():
+    with (
+        _running(seed={"C200.v": 0x11223344, "C201.v": -1}) as mock,
+        DeltaPLC(mock.address[0], port=mock.address[1]) as plc,
+    ):
+        assert plc.read("C200.v") == 0x11223344
+        assert plc.read("C201.v") == -1
+
+
+def test_c32_block_read_is_rejected():
+    with (
+        _running() as mock,
+        DeltaPLC(mock.address[0], port=mock.address[1]) as plc,
+        pytest.raises(DeltaModbusException),
+    ):
+        results = plc.read_planned([ReadGroup(3, 0x0EC8, 4, (make_tag("C200.v"),))])
+        if results[0].error:
+            raise results[0].error
+
+
+@pytest.mark.parametrize("tag,value", [("T0.v", 1), ("S0", True), ("C0.c", True)])
+def test_driver_refuses_tc_writes_without_a_pdu(tag, value):
+    with _running() as mock, DeltaPLC(mock.address[0], port=mock.address[1]) as plc:
+        with pytest.raises(ReadOnlyAddressError):
+            plc.write(tag, value)
+        assert mock.stats.writes == 0
+
+
+def test_set_values_stc():
+    with _running() as mock:
+        mock.set_values("T0.v", 99)
+        mock.set_values("T0.c", True)
+        mock.set_values("C0.v", 123)
+        mock.set_values("C0.c", True)
+        mock.set_values("S0", True)
+        mock.set_values("C200.v", -500)
+        mock.set_values("C254.v", 0x12345678)
+        with DeltaPLC(mock.address[0], port=mock.address[1]) as plc:
+            assert plc.read("T0.v") == 99
+            assert plc.read("T0.c") is True
+            assert plc.read("C0.v") == 123
+            assert plc.read("C0.c") is True
+            assert plc.read("S0") is True
+            assert plc.read("C200.v") == -500
+            assert plc.read("C254.v") == 0x12345678
+
+
+async def test_modbus_writes_rejected_for_stc_and_c32():
+    with _running() as mock:
+        c = await _client(mock.address[1])
+        try:
+            # FC06 / FC16 to T, C16, C32 must fail with ILLEGAL_ADDRESS (2)
+            for addr in (0x0600, 0x0E00, 0x0EC8):
+                res6 = await c.write_register(addr, 1, device_id=1)
+                assert res6.isError() and res6.exception_code == 2
+                res16 = await c.write_registers(addr, [1, 2], device_id=1)
+                assert res16.isError() and res16.exception_code == 2
+            # FC05 / FC15 to S, T contact, C contact must fail with ILLEGAL_ADDRESS (2)
+            for addr in (0x0000, 0x0600, 0x0E00, 0x0EC8):
+                res5 = await c.write_coil(addr, True, device_id=1)
+                assert res5.isError() and res5.exception_code == 2
+                res15 = await c.write_coils(addr, [True], device_id=1)
+                assert res15.isError() and res15.exception_code == 2
+        finally:
+            c.close()
+
+
+async def test_c32_invalid_counts_and_straddles_rejected():
+    with _running() as mock:
+        c = await _client(mock.address[1])
+        try:
+            # Count 1 on C32 -> ILLEGAL_VALUE (3)
+            res = await c.read_holding_registers(0x0EC8, count=1, device_id=1)
+            assert res.isError() and res.exception_code == 3
+
+            # Count 3 on C32 -> ILLEGAL_VALUE (3)
+            res = await c.read_holding_registers(0x0EC8, count=3, device_id=1)
+            assert res.isError() and res.exception_code == 3
+
+            # Straddling C16 and C32 -> ILLEGAL_VALUE (3)
+            res = await c.read_holding_registers(0x0EC7, count=2, device_id=1)
+            assert res.isError() and res.exception_code == 3
+        finally:
+            c.close()
+
+
+def test_seed_and_set_values_validation_stc():
+    with pytest.raises(ValueError, match="0..65535"):
+        MockServer(port=0, seed={"T0.v": 70000})
+    with pytest.raises(ValueError, match="0..65535"):
+        MockServer(port=0, seed={"C0.v": -1})
+    with pytest.raises(ValueError, match="booleans"):
+        MockServer(port=0, seed={"S0": 1})
+    with pytest.raises(ValueError, match="booleans"):
+        MockServer(port=0, seed={"T0.c": 1})
+    with pytest.raises(ValueError, match="booleans"):
+        MockServer(port=0, seed={"C0.c": 1})
+    with pytest.raises(ValueError, match="-2147483648..4294967295"):
+        MockServer(port=0, seed={"C200.v": 2**32})
+    with pytest.raises(ValueError, match="-2147483648..4294967295"):
+        MockServer(port=0, seed={"C200.v": -(2**31) - 1})
+    with pytest.raises(ValueError, match="-2147483648..4294967295"):
+        MockServer(port=0, seed={"C200.v": True})
+
+    with _running() as mock:
+        with pytest.raises(ValueError, match="-2147483648..4294967295"):
+            mock.set_values("C200.v", 2**32)
+        with pytest.raises(ValueError, match="-2147483648..4294967295"):
+            mock.set_values("C200.v", True)
+        with pytest.raises(ValueError, match="0..65535"):
+            mock.set_values("T0.v", 70000)
+        with pytest.raises(ValueError, match="booleans"):
+            mock.set_values("S0", 123)
