@@ -2,6 +2,8 @@
 import pytest
 
 from deltactl.addressing import (
+    _extract_address,
+    _resolve_view,
     expand_tags,
     normalize_tag,
     parse_raw,
@@ -290,3 +292,74 @@ async def test_validate_planned_groups_new_types():
     # Out-of-bounds start fails validation
     with pytest.raises(AddressRangeError):
         plc._validate_planned_groups([ReadGroup(3, 0x0750, 1, (make_tag("T0.v"),))])
+
+
+def test_parsed_tag_properties():
+    tag = parse_tag("D100.3")
+    assert tag.device is Device.D
+    assert tag.index == 100
+    assert tag.wire == 0x1000 + 100
+    assert tag.block == 0
+    assert tag.bit == 3
+    assert tag.view is View.WORD
+    assert tag.function == 3
+    assert tag.value_width == 1
+    assert tag.default_dtype is None
+    assert tag.coalesce is True
+
+    s_tag = parse_tag("S0")
+    assert s_tag.view is View.BIT
+    assert s_tag.function == 1
+
+    c_tag = parse_tag("C200.v")
+    assert c_tag.default_dtype == "i32"
+    assert c_tag.coalesce is False
+
+
+def test_resolve_view_errors():
+    with pytest.raises(ValueError, match="unknown device"):
+        _resolve_view("INVALID", None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="unknown view"):
+        _resolve_view(Device.T, "invalid")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="no word view"):
+        _resolve_view(Device.S, View.WORD)
+
+
+def test_extract_address_type_error():
+    with pytest.raises(TypeError, match="expected Address or ParsedTag"):
+        _extract_address("not an address")  # type: ignore[arg-type]
+
+
+def test_parse_raw_errors():
+    with pytest.raises(ValueError, match="unknown raw type"):
+        parse_raw(0x1000, "invalid_raw_type")
+
+
+def test_expand_tags_validation_errors():
+    with pytest.raises(ValueError, match="reversed"):
+        expand_tags(["D10-D5"])
+    with pytest.raises(ValueError, match="multiple devices"):
+        expand_tags(["D0-M10"])
+    with pytest.raises(ValueError, match="multiple views"):
+        expand_tags(["T0.c-T2.v"])
+    with pytest.raises(ValueError, match="endpoints must not contain dtype"):
+        expand_tags(["D0:u16-D10"])
+    with pytest.raises(ValueError, match="both endpoints must be valid tags"):
+        expand_tags(["D99999-D100000"])
+    with pytest.raises(ValueError, match="f32 is not allowed"):
+        expand_tags(["T0.v-T2.v:f32"])
+    with pytest.raises(ValueError, match="does not match"):
+        expand_tags(["T0.v-T2.v:i32"])
+    with pytest.raises(ValueError, match="limit"):
+        expand_tags(["D0-D200"], limit=5)
+
+
+def test_validate_span_errors():
+    tag = parse_tag("D0")
+    with pytest.raises(ValueError, match="span width or count must be specified"):
+        validate_span(tag, width=None, count=None)
+    with pytest.raises(ValueError, match="span width must be at least 1"):
+        validate_span(tag, width=0)
+    c32_tag = parse_tag("C200.v")
+    with pytest.raises(ValueError, match="does not divide evenly"):
+        validate_span(c32_tag, count=3)

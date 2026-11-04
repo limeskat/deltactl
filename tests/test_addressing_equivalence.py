@@ -180,9 +180,9 @@ def test_wire_and_block_match_v020(profile, device):
             with pytest.raises(AddressRangeError):
                 block_for(device, index, view=_view_for[device], profile=profile)
             continue
-        assert wire_for(
-            device, index, view=_view_for[device], profile=profile
-        ) == _legacy_wire(row, device, index)
+        assert wire_for(device, index, view=_view_for[device], profile=profile) == _legacy_wire(
+            row, device, index
+        )
         expected_block = 0
         if device is Device.D and row["dsplit"] is not None and index > row["dsplit"]:
             expected_block = 1
