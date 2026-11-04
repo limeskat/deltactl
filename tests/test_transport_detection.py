@@ -13,7 +13,7 @@ from deltactl.errors import (
     UnknownModelCodeError,
 )
 from deltactl.mock import MockServer
-from deltactl.planning import make_tag, plan_reads
+from deltactl.planning import ReadGroup, make_tag, plan_reads
 from deltactl.profiles import (
     DEFAULT_PROFILE,
     PROFILE_SE_EH3_SV2,
@@ -388,6 +388,47 @@ async def test_read_planned_out_of_range_raises_and_sends_zero_frames(mock_ss2):
         await plc_unconnected.read_planned([group])
     assert mock_ss2.stats.requests == initial_requests
     assert plc_unconnected.is_connected is False
+
+
+async def test_read_planned_tagless_and_slot_validation(mock_ss2):
+    async with AsyncDeltaPLC("127.0.0.1", port=mock_ss2.address[1], series="SS2") as plc:
+        # tagless ReadGroup(3, 0x0F00, 2, ()) -> AddressRangeError, zero new mock requests
+        reqs = mock_ss2.stats.requests
+        with pytest.raises(AddressRangeError):
+            await plc.read_planned([ReadGroup(3, 0x0F00, 2, ())])
+        assert mock_ss2.stats.requests == reqs
+
+        # tagless ReadGroup(3, 0x0EC8, 4, ()) -> AddressRangeError, zero new requests
+        with pytest.raises(AddressRangeError):
+            await plc.read_planned([ReadGroup(3, 0x0EC8, 4, ())])
+        assert mock_ss2.stats.requests == reqs
+
+        # tagged ReadGroup(3, 0x0EC8, 4, (make_tag("C200.v"), make_tag("C201.v"))) -> AddressRangeError, zero new requests
+        c200_tag = make_tag("C200.v")
+        c201_tag = make_tag("C201.v")
+        with pytest.raises(AddressRangeError):
+            await plc.read_planned([ReadGroup(3, 0x0EC8, 4, (c200_tag, c201_tag))])
+        assert mock_ss2.stats.requests == reqs
+
+        # tagged group with tag outside span -> AddressRangeError, zero new requests
+        with pytest.raises(AddressRangeError, match="lies outside its group span"):
+            await plc.read_planned([ReadGroup(3, 0x1000, 1, (make_tag("D105"),))])
+        assert mock_ss2.stats.requests == reqs
+
+        # valid tagless ReadGroup(3, 0x0EC8, 2, ()) -> one request and a result
+        mock_ss2.set_values("C200.v", 42)
+        res = await plc.read_planned([ReadGroup(3, 0x0EC8, 2, ())])
+        assert mock_ss2.stats.requests == reqs + 1
+        assert len(res) == 1
+        assert res[0].error is None
+        assert len(res[0].registers) == 2
+
+        # optional: tagless ReadGroup(1, 0x0000, 1, ()) is valid (S0)
+        res_s0 = await plc.read_planned([ReadGroup(1, 0x0000, 1, ())])
+        assert mock_ss2.stats.requests == reqs + 2
+        assert len(res_s0) == 1
+        assert res_s0[0].error is None
+        assert len(res_s0[0].bits) == 1
 
 
 def test_watch_out_of_range_series_fails_exit_2(mock_ss2):

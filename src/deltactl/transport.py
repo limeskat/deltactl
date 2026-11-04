@@ -26,6 +26,7 @@ from pymodbus.exceptions import ConnectionException, ModbusException, ModbusIOEx
 
 from .addressing import Address, View, parse_raw, raw_type_for, validate_span
 from .errors import (
+    AddressRangeError,
     DeltaConnectionError,
     DeltaModbusException,
     DeltaPLCError,
@@ -63,6 +64,13 @@ _METHOD_FOR: dict[int, str] = {
     3: "read_holding_registers",
     1: "read_coils",
     2: "read_discrete_inputs",
+}
+
+#: Modbus read function code to raw type tokens for tagless validation.
+_FUNCTION_RAW_TYPES: dict[int, tuple[str, ...]] = {
+    3: ("d", "tv", "cv"),
+    2: ("x",),
+    1: ("m", "y", "s", "tc", "cc"),
 }
 
 #: pymodbus method name per write function code.
@@ -513,10 +521,38 @@ class AsyncDeltaPLC:
         """Validate that all groups and tags are within effective_profile bounds."""
         prof = self.effective_profile
         for group in groups:
+            if not group.tags:
+                candidates = _FUNCTION_RAW_TYPES.get(group.function, ())
+                valid = False
+                for cand in candidates:
+                    try:
+                        start_addr = parse_raw(group.start, raw_type=cand, profile=prof)
+                        validate_span(
+                            start_addr,
+                            group.count,
+                            write=False,
+                            allow_block_crossing=True,
+                            profile=prof,
+                        )
+                    except (AddressRangeError, ValueError):
+                        continue
+                    if start_addr.coalesce is False and group.count != start_addr.value_width:
+                        raise AddressRangeError(
+                            f"slot read at wire 0x{group.start:04X} must be a single value "
+                            f"(one PDU per counter) of width {start_addr.value_width}, "
+                            f"got count {group.count}"
+                        )
+                    valid = True
+                    break
+                if not valid:
+                    raise AddressRangeError(
+                        f"read group (function {group.function}, wire 0x{group.start:04X}, "
+                        f"count {group.count}) does not match any valid address range"
+                    )
+                continue
+
             for tag in group.tags:
                 validate_span(tag.address, tag.width, write=False, profile=prof)
-            if not group.tags:
-                continue
             raw_type = raw_type_for(group.tags[0].address)
             start_addr = parse_raw(group.start, raw_type=raw_type, profile=prof)
             validate_span(
@@ -526,6 +562,20 @@ class AsyncDeltaPLC:
                 allow_block_crossing=True,
                 profile=prof,
             )
+            slot_tags = [t for t in group.tags if not t.address.coalesce]
+            if slot_tags and (
+                len(group.tags) != 1 or group.count != slot_tags[0].address.value_width
+            ):
+                raise AddressRangeError(
+                    f"a slot read must be a single value (one PDU per counter), "
+                    f"got {len(group.tags)} tags with count {group.count}"
+                )
+            for tag in group.tags:
+                if not (
+                    group.start <= tag.address.wire
+                    and tag.address.wire + tag.width <= group.start + group.count
+                ):
+                    raise AddressRangeError(f"tag {tag.name} lies outside its group span")
 
     async def read_planned(
         self, groups: Sequence[ReadGroup], *, retries: int | None = None

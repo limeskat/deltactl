@@ -100,6 +100,10 @@ class Address:
     def coalesce(self) -> bool:
         return self.segment.coalesce
 
+    @property
+    def value_width(self) -> int:
+        return self.segment.value_width
+
 
 @dataclass(frozen=True)
 class ParsedTag:
@@ -245,7 +249,10 @@ def _locate(
     for segment in view_spec.segments:
         if segment.first <= index <= segment.last:
             return segment, view_spec
-    ranges_str = ", ".join(f"{s.first}-{s.last}" for s in view_spec.segments)
+    if device in _OCTAL_DEVICES:
+        ranges_str = ", ".join(f"{s.first:o}-{s.last:o}" for s in view_spec.segments)
+    else:
+        ranges_str = ", ".join(f"{s.first}-{s.last}" for s in view_spec.segments)
     raise AddressRangeError(
         f"{_format_tag(device, index, view=resolved)} is outside the {device.value} range ({ranges_str})"
     )

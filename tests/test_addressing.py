@@ -88,6 +88,14 @@ def test_invalid_tags(bad):
         parse_tag(bad)
 
 
+def test_octal_device_error_bounds():
+    with pytest.raises(AddressRangeError) as exc_info:
+        parse_tag("X400")
+    err = str(exc_info.value)
+    assert "377" in err
+    assert "255" not in err
+
+
 def test_full_span_guards_and_bounds():
     with pytest.raises(ReadOnlyAddressError):
         validate_span(parse_tag("D999").address, 2, write=True)

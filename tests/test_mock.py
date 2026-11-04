@@ -8,9 +8,8 @@ from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.server.requesthandler import ServerRequestHandler
 
 from deltactl import DeltaPLC
-from deltactl.errors import DeltaModbusException, ReadOnlyAddressError
+from deltactl.errors import ReadOnlyAddressError
 from deltactl.mock import MockServer, MockStats, _MockHandler
-from deltactl.planning import ReadGroup, make_tag
 
 
 @pytest.fixture
@@ -241,15 +240,14 @@ def test_c32_slot_reads_are_address_based():
         assert plc.read("C201.v") == -1
 
 
-def test_c32_block_read_is_rejected():
-    with (
-        _running() as mock,
-        DeltaPLC(mock.address[0], port=mock.address[1]) as plc,
-        pytest.raises(DeltaModbusException),
-    ):
-        results = plc.read_planned([ReadGroup(3, 0x0EC8, 4, (make_tag("C200.v"),))])
-        if results[0].error:
-            raise results[0].error
+async def test_c32_block_read_is_rejected():
+    with _running() as mock:
+        c = await _client(mock.address[1])
+        try:
+            res = await c.read_holding_registers(0x0EC8, count=4, device_id=1)
+            assert res.isError() and res.exception_code == 3
+        finally:
+            c.close()
 
 
 @pytest.mark.parametrize("tag,value", [("T0.v", 1), ("S0", True), ("C0.c", True)])
