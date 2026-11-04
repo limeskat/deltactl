@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from pymodbus.client import AsyncModbusTcpClient
 
-from deltactl.addressing import Device, parse_tag
+from deltactl.addressing import Device, View, parse_tag
 from deltactl.dvp_map import (
     C16_COUNT,
     C32_FIRST,
@@ -76,6 +76,22 @@ def test_function_code_for_matches_read_map():
     assert function_code_for(Device.X) == 2
     assert function_code_for(Device.M) == 1
     assert function_code_for(Device.Y) == 1
+
+
+def test_function_code_inference():
+    assert function_code_for(Device.D) == 3
+    assert function_code_for(Device.X) == 2
+    assert function_code_for(Device.M) == 1
+    assert function_code_for(Device.Y) == 1
+    assert function_code_for(Device.S) == 1
+    assert function_code_for(Device.T, View.BIT) == 1
+    assert function_code_for(Device.T, View.WORD) == 3
+    assert function_code_for(Device.C, View.BIT) == 1
+    assert function_code_for(Device.C, View.WORD) == 3
+    with pytest.raises(ValueError):
+        function_code_for(Device.C)
+    with pytest.raises(ValueError):
+        function_code_for(Device.T)
 
 
 async def _read(server, tag):

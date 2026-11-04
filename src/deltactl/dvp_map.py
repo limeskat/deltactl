@@ -9,7 +9,7 @@ ceilings a real DVP enforces.  ``wire_for`` is re-exported from
 
 from __future__ import annotations
 
-from .addressing import Device, wire_for
+from .addressing import Device, View, _resolve_view, wire_for
 
 __all__ = [
     "C16_COUNT",
@@ -57,13 +57,18 @@ C16_COUNT = 200  # C0-C199
 C32_FIRST = 200  # C200
 C32_LAST = 254  # C254
 
-#: Modbus read function per device: holding registers (D), discrete inputs (X),
-#: coils (M/Y).  The simulator context accepts the same codes for writes.
-_FUNCTION_FOR: dict[Device, int] = {
-    Device.D: 3,
-    Device.X: 2,
-    Device.M: 1,
-    Device.Y: 1,
+#: Modbus read function per (device, view): holding registers (D, T.v, C.v),
+#: discrete inputs (X), coils (M, Y, S, T.c, C.c).
+_FUNCTION_FOR: dict[tuple[Device, View], int] = {
+    (Device.D, View.WORD): 3,
+    (Device.X, View.BIT): 2,
+    (Device.M, View.BIT): 1,
+    (Device.Y, View.BIT): 1,
+    (Device.S, View.BIT): 1,
+    (Device.T, View.BIT): 1,
+    (Device.T, View.WORD): 3,
+    (Device.C, View.BIT): 1,
+    (Device.C, View.WORD): 3,
 }
 
 # --------------------------------------------------------------------------- spans
@@ -126,6 +131,12 @@ WRITE_GUARDS: dict[int, tuple[tuple[int, int], ...]] = {
 }
 
 
-def function_code_for(area: Device) -> int:
-    """Modbus function code that addresses ``area`` (D→03, X→02, M/Y→01)."""
-    return _FUNCTION_FOR[area]
+def function_code_for(device: Device, view: View | None = None) -> int:
+    """Modbus function code that addresses ``device`` (and ``view`` for multi-view devices).
+
+    Single-view devices infer their function code (D→03, X→02, M/Y/S→01).
+    Multi-view devices (T, C) require an explicit ``view`` and raise
+    :class:`ValueError` when omitted.
+    """
+    resolved_view = _resolve_view(device, view)
+    return _FUNCTION_FOR[(device, resolved_view)]

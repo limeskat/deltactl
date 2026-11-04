@@ -8,10 +8,10 @@ Tested against physical **Delta DVP-12SE** hardware and designed for SCADA/HMI b
 
 ## Features
 
-- **Symbolic Addressing:** Full support for `D`, `M`, `X`, `Y` registers, octal I/O indices (`X0–X377`, `Y0–Y377`), and bit-of-word syntax (`D100.3`).
+- **Symbolic Addressing:** Full support for `D`, `M`, `X`, `Y` registers, step relays `S`, timers `T` (`.c` contact bit / `.v` value), counters `C` (16-bit `C0–C199` and 32-bit slot counters `C200–C254`), octal I/O indices (`X0–X377`, `Y0–Y377`), and bit-of-word syntax (`D100.3`).
 - **Data Types & Delta CDAB Byte Order:** 16-bit (`u16`, `i16`) and 32-bit (`i32`, `u32`, `f32`) typed access using Delta's low-word-first (CDAB) register order.
-- **Strict Write Safety:** Read-only `X` inputs (`FC02`), full-span guards on critical registers (`D1000–D1002`, `D1010–D1012`, `D1067`, `M1000–M1003`, `M1067`), fail-fast writes, socket closure on write timeouts, and atomic client-side read-modify-write for bit-of-word updates.
-- **Hardware-Aware Planning:** Automatic coalescing and chunking conforming to Delta's 100-register / 256-bit PDU limits and split memory block boundaries (`D4095/D4096`, `M1535/M1536`).
+- **Strict Write Safety:** Read-only `X` inputs (`FC02`), write refusal on `T`/`C`/`S` devices by policy, full-span guards on critical registers (`D1000–D1002`, `D1010–D1012`, `D1067`, `M1000–M1003`, `M1067`), fail-fast writes, socket closure on write timeouts, and atomic client-side read-modify-write for bit-of-word updates.
+- **Hardware-Aware Planning:** Automatic coalescing and chunking conforming to Delta's 100-register / 256-bit PDU limits, split memory block boundaries (`D4095/D4096`, `M1535/M1536`), and single-PDU reads for 32-bit counters.
 - **Multi-Series Hardware Profiles:** Full support for all 8 commercial Delta DVP series (ES/EX/SS, SA/SX/SC, EH2/SV, EH3/SV2, ES2/EX2, SS2, SA2/SX2, SE) mapped to 5 canonical hardware memory profiles. Automatic hardware model detection via `D1001`, strict mismatch safety gates (`--strict-series`), and persistent configuration.
 - **Telemetry Poller:** Multi-tag polling with coalescing, deadband filtering, report-by-exception (RBE), configurable heartbeat snapshots, and NDJSON/CSV streaming.
 - **Bench Diagnostic CLI (`deltactl`):** Register reads, writes, live watching, passive/active network link diagnostics (`deltactl doctor`), and an accurate local mock simulator (`deltactl mock`).
@@ -113,6 +113,9 @@ deltactl read D0 --series SS2 --strict-series --host 192.168.1.5
 | **M** (Internal Relays) | `M0–M1535` (Block 1)<br>`M1536–M4095` (Block 2) | `0x0800 + n`<br>`0xB000 + (n - 1536)` | 01 (Coil) | 05 (Single) / 15 (Multiple) | Booleans. M1535/M1536 split block boundary is never merged into a single PDU. |
 | **X** (Discrete Inputs) | `X0–X377` (octal) | `0x0400 + oct2dec(n)` | 02 (Discrete) | *None (Read-Only)* | Physical inputs. Read via **FC02 only** (`FC01` returns exception 02). Writes are rejected client-side. |
 | **Y** (Discrete Outputs) | `Y0–Y377` (octal) | `0x0500 + oct2dec(n)` | 01 (Coil) | 05 (Single) / 15 (Multiple) | Physical outputs. **`Y0–Y377` is writable**. |
+| **S** (Step Relays) | `S0–S1023` | `0x0000 + n` | 01 (Coil) | *None (Read-Only by policy)* | Booleans. Step relays. The driver refuses writes by policy (hardware writability per the manual; raises `ReadOnlyAddressError`). |
+| **T** (Timers) | `T0.c–T255.c` (Contact)<br>`T0.v–T255.v` (Current Value) | `0x0600 + n` | 01 (Coil, `.c`)<br>03 (Holding, `.v`) | *None (Read-Only by policy)* | Contacts (`.c`) are booleans; current values (`.v`) are 16-bit words (`u16`). Timer values are raw counts (time base per timer specification in the manual). The driver refuses writes by policy (hardware writability per the manual; raises `ReadOnlyAddressError`). |
+| **C** (Counters) | `C0.c–C254.c` (Contact)<br>`C0.v–C199.v` (16-bit Value)<br>`C200.v–C254.v` (32-bit Value) | `0x0E00 + n` (C0–C199)<br>`0x0EC8 + (n - 200)` (C200–C254) | 01 (Coil, `.c`)<br>03 (Holding, `.v`) | *None (Read-Only by policy)* | Contacts (`.c`) are booleans; 16-bit counter values default to `u16`. 32-bit counter values (`C200.v–C254.v`) default to `i32` in Delta CDAB format. 32-bit counters are read one PDU at a time (never coalesced into multi-value chunks). The driver refuses writes by policy (hardware writability per the manual; raises `ReadOnlyAddressError`). |
 | **Bit-of-word** | `D<n>.<bit>` (bit: 0..15) | Read `0x1000 + n` | 03 (Holding) | 06 (Single) | Read-modify-write on D register under transport lock. |
 
 *Note: String/ASCII registers are out of scope for v0.1. The table above reflects the full-range `SE_EH3_SV2` profile. Register ceilings, interior gaps (e.g. `D600–D999` on `ES_EX_SS`), and octal I/O limits vary by active hardware profile. See [Multi-Series Support & Hardware Profiles](#multi-series-support--hardware-profiles) below.*
@@ -279,8 +282,9 @@ You can specify data types inline on any D tag or via the `--dtype` CLI flag:
 
 To prevent accidental hardware lockups, watchdog timeouts, and machine disruption, the driver enforces strict write safety rules:
 
-1. **Full-Span Guarded Registers:**
+1. **Full-Span Guarded Registers & Read-Only Policies:**
    - **X Inputs:** `X0–X377` are physical inputs; all writes raise `ReadOnlyAddressError` client-side before any network packet is dispatched.
+   - **T, C, and S Devices:** Writes to Timers (`T`), Counters (`C`), and Step relays (`S`) are refused by driver policy (raises `ReadOnlyAddressError` client-side before I/O; hardware writability per the manual).
    - **System Special Relays:** `M1000–M1003` (RUN status/system flags) and `M1067` (program error flag) are guarded against writes.
    - **System Special Registers:** `D1000–D1002` (watchdog setpoint, firmware ID, capacity), `D1010–D1012` (scan time measurements), and `D1067` (error fault code) are guarded against writes.
    - **Span-Aware Rejection:** A multi-register or 32-bit write whose span overlaps any guarded register (e.g. writing a 2-register `f32` to `D999`) is rejected client-side before I/O.
@@ -306,6 +310,8 @@ To prevent accidental hardware lockups, watchdog timeouts, and machine disruptio
 - **Split-Block Boundaries:**
   - `D0–D4095` and `D4096–D11999` are non-contiguous internal blocks. The planner never coalesces across the `D4095`/`D4096` boundary. Writing or reading a 32-bit value at `D4095` raises `BlockBoundaryError`.
   - `M0–M1535` and `M1536–M4095` are likewise kept in distinct request chunks.
+- **32-Bit Counters (`C200–C254`):** Delta 32-bit counters occupy a single register slot on the wire but store 32-bit values in CDAB format. 32-bit counters are read one PDU at a time (they are never coalesced with adjacent registers into a multi-register PDU).
+- **Timer Values (`T0.v–T255.v`):** Timer values are raw counts. The actual elapsed time depends on the timer's hardware time base (e.g. 100 ms, 10 ms, or 1 ms as specified in the Delta manual).
 - **Watchdog, Station & Scan Registers:**
   - `D1000`: Watchdog Timer (WDT) setpoint in **1 ms** units (factory default 200 ms).
   - `D1001`: Hardware and firmware identifier (e.g. `0x7C21` where `0x7C` = SE model and `0x21` = v2.1). This value is **informational only** and is not flagged as an error by `doctor`.
@@ -437,6 +443,8 @@ CLI flags (e.g. `--host`, `--port`, `--series`) always take precedence over envi
   - The driver closes the socket on write timeouts to avoid executing buffered stale writes. Ensure network latency is stable and the PLC cycle time is normal.
 - **`ReadOnlyAddressError: X0 is read-only`:**
   - `X` addresses correspond to physical PLC inputs and cannot be written via Modbus. Write to internal relays (`M`) or physical outputs (`Y`) instead.
+- **`ReadOnlyAddressError: T0.v / S0 / C0.c is read-only`:**
+  - Writes to Timers (`T`), Counters (`C`), and Step relays (`S`) are refused by driver policy (hardware writability per the manual).
 - **`DeltaAddressError: D1000 is guarded against writes`:**
   - System registers (`D1000–D1002`, `D1010–D1012`, `D1067`, `M1000–M1003`, `M1067`) are write-protected by driver policy to safeguard PLC operation.
 - **Subnet Mismatch:**

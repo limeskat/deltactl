@@ -165,3 +165,28 @@ def test_cli_read_write_additional_branches(capsys, mock, monkeypatch):
 
     monkeypatch.setenv("DELTA_PLC_TIMEOUT", "not_a_float")
     assert main(["read", "D100", "--host", "127.0.0.1", "--port", str(mock.address[1])]) == 2
+
+
+def test_cli_word_views_dtype(capsys, mock):
+    mock.set_values("T0.v", 123)
+    mock.set_values("C200.v", 45678)
+    assert run(capsys, mock, "read", "--dtype", "u16", "T0.v") == 0
+    assert "T0.v = 123" in capsys.readouterr().out
+    assert run(capsys, mock, "read", "--dtype", "i32", "C200.v") == 0
+    assert "C200.v = 45678" in capsys.readouterr().out
+
+
+def test_cli_refuses_tcs_writes(capsys, mock):
+    before = mock.stats.requests
+    for tag, val in [("T0.v", "10"), ("S0", "true"), ("C0.c", "true")]:
+        assert run(capsys, mock, "write", tag, val) == 1
+        err = capsys.readouterr().err
+        assert "read-only" in err.lower()
+        assert tag in err
+    assert mock.stats.requests == before
+
+    for tag, val in [("T0.v", "10"), ("S0", "true"), ("C0.c", "true")]:
+        assert main(["write", tag, val, "--host", "203.0.113.1", "--timeout", "0.01"]) == 1
+        err = capsys.readouterr().err
+        assert "read-only" in err.lower()
+        assert tag in err
