@@ -236,7 +236,12 @@ def _locate(
     """Segment containing ``index`` and its view spec."""
     prof = profile or DEFAULT_PROFILE
     resolved = _resolve_view(device, view)
-    view_spec = prof.devices[device].views[resolved]
+    dev_spec = prof.devices.get(device)
+    if dev_spec is None or resolved not in dev_spec.views:
+        raise AddressRangeError(
+            f"{device.value} {resolved.value} is not available on profile {prof.name}"
+        )
+    view_spec = dev_spec.views[resolved]
     for segment in view_spec.segments:
         if segment.first <= index <= segment.last:
             return segment, view_spec

@@ -1,12 +1,15 @@
 import asyncio
+import inspect
 from contextlib import contextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pymodbus.client import AsyncModbusTcpClient
+from pymodbus.server.requesthandler import ServerRequestHandler
 
 from deltactl import DeltaPLC
 from deltactl.errors import DeltaModbusException, ReadOnlyAddressError
-from deltactl.mock import MockServer
+from deltactl.mock import MockServer, MockStats, _MockHandler
 from deltactl.planning import ReadGroup, make_tag
 
 
@@ -342,3 +345,48 @@ def test_seed_and_set_values_validation_stc():
             mock.set_values("T0.v", 70000)
         with pytest.raises(ValueError, match="booleans"):
             mock.set_values("S0", 123)
+
+
+async def test_mock_handler_handle_request_accepts_positional_pdu():
+    sig = inspect.signature(_MockHandler.handle_request)
+    assert any(
+        p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        for name, p in sig.parameters.items()
+        if name != "self"
+    )
+
+    handler = _MockHandler.__new__(_MockHandler)
+    handler.stats = MockStats()
+    handler.values = {}
+    handler.last_pdu = None
+
+    pdu = MagicMock()
+    pdu.function_code = 3
+    pdu.address = 0x1000
+    pdu.count = 1
+
+    # pymodbus 3.16.2 signature: handle_request(pdu)
+    with patch.object(ServerRequestHandler, "handle_request", new_callable=AsyncMock) as mock_super:
+        await handler.handle_request(pdu)
+        mock_super.assert_awaited_once_with(pdu)
+        assert handler.stats.requests == 1
+
+    # pymodbus 3.16.1 signature: handle_request() with last_pdu fallback
+    handler.last_pdu = pdu
+    with patch.object(ServerRequestHandler, "handle_request", new_callable=AsyncMock) as mock_super:
+        await handler.handle_request()
+        mock_super.assert_awaited_once_with()
+        assert handler.stats.requests == 2
+
+    # rejection path with positional pdu
+    bad_pdu = MagicMock()
+    bad_pdu.function_code = 3
+    bad_pdu.address = 0x0000
+    bad_pdu.count = 1
+    bad_pdu.transaction_id = 1
+    bad_pdu.dev_id = 1
+    handler.server_send = MagicMock()
+    handler.last_addr = ("127.0.0.1", 502)
+    await handler.handle_request(bad_pdu)
+    assert handler.stats.rejected == 1
+    assert handler.server_send.called

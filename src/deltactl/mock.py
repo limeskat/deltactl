@@ -355,11 +355,11 @@ class _MockHandler(ServerRequestHandler):
         )
         self.server_send(response, self.last_addr)
 
-    async def handle_request(self) -> None:
+    async def handle_request(self, *args: Any, **kwargs: Any) -> None:
         """Pre-check the request, then defer to the simulator datastore."""
-        pdu = self.last_pdu
+        pdu = args[0] if args else self.last_pdu
         if pdu is None:
-            await super().handle_request()
+            await super().handle_request(*args, **kwargs)
             return
         self.stats.requests += 1
         fc = pdu.function_code
@@ -376,7 +376,7 @@ class _MockHandler(ServerRequestHandler):
             return
         if fc in _WRITE_FCS:
             self.stats.writes += 1
-        await super().handle_request()
+        await super().handle_request(*args, **kwargs)
 
 
 class _MockTcpServer(ModbusTcpServer):

@@ -1,4 +1,6 @@
 # tests/test_addressing.py
+from types import MappingProxyType
+
 import pytest
 
 from deltactl.addressing import (
@@ -10,6 +12,7 @@ from deltactl.addressing import (
     parse_tag,
     raw_type_for,
     validate_span,
+    wire_for,
 )
 from deltactl.errors import (
     AddressRangeError,
@@ -23,7 +26,12 @@ from deltactl.planning import make_tag
 from deltactl.profiles import (
     DEVICE_VIEWS,
     Device,
+    DeviceSpec,
+    Segment,
+    SeriesProfile,
     View,
+    ViewSpec,
+    intersect_profiles,
 )
 
 
@@ -363,3 +371,56 @@ def test_validate_span_errors():
     c32_tag = parse_tag("C200.v")
     with pytest.raises(ValueError, match="does not divide evenly"):
         validate_span(c32_tag, count=3)
+
+
+def test_locate_missing_device_or_view_raises_address_range_error():
+    empty_prof = SeriesProfile(name="empty", aliases=(), devices=MappingProxyType({}))
+    with pytest.raises(AddressRangeError, match="D word is not available on profile empty"):
+        wire_for(Device.D, 0, profile=empty_prof)
+    with pytest.raises(AddressRangeError, match="D word is not available on profile empty"):
+        parse_tag("D0", profile=empty_prof)
+
+    left = SeriesProfile(
+        name="left",
+        aliases=(),
+        devices=MappingProxyType(
+            {
+                Device.D: DeviceSpec(
+                    MappingProxyType({View.WORD: ViewSpec(3, True, (Segment(0, 9, 0x1000),))})
+                )
+            }
+        ),
+    )
+    right = SeriesProfile(
+        name="right",
+        aliases=(),
+        devices=MappingProxyType(
+            {
+                Device.D: DeviceSpec(
+                    MappingProxyType({View.WORD: ViewSpec(3, True, (Segment(20, 29, 0x1020),))})
+                )
+            }
+        ),
+    )
+    inter = intersect_profiles(left, right)
+    assert Device.D not in inter.devices
+    with pytest.raises(AddressRangeError, match="D word is not available on profile"):
+        wire_for(Device.D, 0, profile=inter)
+    with pytest.raises(AddressRangeError, match="D word is not available on profile"):
+        parse_tag("D0", profile=inter)
+
+    bit_only = SeriesProfile(
+        name="bit_only",
+        aliases=(),
+        devices=MappingProxyType(
+            {
+                Device.T: DeviceSpec(
+                    MappingProxyType({View.BIT: ViewSpec(1, False, (Segment(0, 127, 0x0600),))})
+                )
+            }
+        ),
+    )
+    with pytest.raises(AddressRangeError, match="T word is not available on profile bit_only"):
+        wire_for(Device.T, 0, view=View.WORD, profile=bit_only)
+    with pytest.raises(AddressRangeError, match="T word is not available on profile bit_only"):
+        parse_tag("T0.v", profile=bit_only)
