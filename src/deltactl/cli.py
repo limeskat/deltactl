@@ -542,8 +542,14 @@ def _cmd_read(args: argparse.Namespace) -> int:
 
     for text in tag_texts:
         _check_dtype_target(text, dtype, parser, profile=configured_profile)
-    default_dtype = DType(dtype) if dtype is not None else None
-    resolved = [make_tag(text, default_dtype, profile=configured_profile) for text in tag_texts]
+    resolved = [
+        make_tag(
+            text,
+            dtype=DType(dtype) if dtype is not None else None,
+            profile=configured_profile,
+        )
+        for text in tag_texts
+    ]
 
     single = len(resolved) == 1
     value_count = (count or 1) if single else 1
@@ -658,8 +664,11 @@ def _cmd_write(args: argparse.Namespace) -> int:
             parser.error("write requires at least one value")
 
     _check_dtype_target(tag_text, dtype, parser, profile=configured_profile)
-    default_dtype = DType(dtype) if dtype is not None else None
-    tag = make_tag(tag_text, default_dtype, profile=configured_profile)
+    tag = make_tag(
+        tag_text,
+        dtype=DType(dtype) if dtype is not None else None,
+        profile=configured_profile,
+    )
     explicit = dtype is not None or ":" in tag_text
     count = len(value_texts)
 
@@ -891,8 +900,14 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     tag_texts = expand_tags(args.tags, profile=configured_profile)
     for text in tag_texts:
         _check_dtype_target(text, dtype, parser, profile=configured_profile)
-    default_dtype = DType(dtype) if dtype is not None else None
-    resolved = [make_tag(text, default_dtype, profile=configured_profile) for text in tag_texts]
+    resolved = [
+        make_tag(
+            text,
+            dtype=DType(dtype) if dtype is not None else None,
+            profile=configured_profile,
+        )
+        for text in tag_texts
+    ]
 
     seen_names: set[str] = set()
     tags: list[Tag] = []

@@ -169,11 +169,28 @@ def test_cli_read_write_additional_branches(capsys, mock, monkeypatch):
 
 def test_cli_word_views_dtype(capsys, mock):
     mock.set_values("T0.v", 123)
-    mock.set_values("C200.v", 45678)
+    mock.set_values("C200.v", -1)
     assert run(capsys, mock, "read", "--dtype", "u16", "T0.v") == 0
     assert "T0.v = 123" in capsys.readouterr().out
     assert run(capsys, mock, "read", "--dtype", "i32", "C200.v") == 0
-    assert "C200.v = 45678" in capsys.readouterr().out
+    assert "C200.v = -1" in capsys.readouterr().out
+    assert run(capsys, mock, "read", "--dtype", "u32", "C200.v") == 0
+    assert "C200.v = 4294967295" in capsys.readouterr().out
+
+    before = mock.stats.requests
+    assert run(capsys, mock, "read", "--dtype", "u16", "C200.v") == 2
+    err = capsys.readouterr().err
+    assert "fixed-width" in err and "width" in err and "u16" in err
+
+    assert run(capsys, mock, "read", "--dtype", "i32", "T0.v") == 2
+    err = capsys.readouterr().err
+    assert "fixed-width" in err and "width" in err and "i32" in err
+
+    assert run(capsys, mock, "read", "--dtype", "f32", "T0.v") == 2
+    err = capsys.readouterr().err
+    assert "integer" in err and "f32" in err
+
+    assert mock.stats.requests == before
 
 
 def test_cli_refuses_tcs_writes(capsys, mock):
