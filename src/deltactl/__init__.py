@@ -24,7 +24,7 @@ from .planning import Tag
 from .poller import Frame, TagPoller
 from .transport import AsyncDeltaPLC
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "AddressRangeError",

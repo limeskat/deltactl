@@ -39,7 +39,7 @@ def test_version(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert "deltactl 0.2.0" in capsys.readouterr().out
+    assert "deltactl 0.3.0" in capsys.readouterr().out
 
 
 def test_doctor_table_format(capsys, mock):

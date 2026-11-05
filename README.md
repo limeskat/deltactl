@@ -157,6 +157,8 @@ flowchart TD
 - **I/O Capacity:** `SA_SX_SC` and `ES_EX_SS` support up to `X177`/`Y177` (128 points, octal indices 0..177, decimal 0..127). The other profiles support up to `X377`/`Y377` (256 points, octal indices 0..377, decimal 0..255).
 - **Split Memory Boundaries:** For profiles with large memory spaces, addresses above `D4095` switch to wire base `0x9000` (`D4096` = `0x9000`), and addresses above `M1535` switch to wire base `0xB000` (`M1536` = `0xB000`). The request planner automatically chunks queries to avoid crossing these physical boundaries. In `ES_EX_SS`, all valid registers reside in wire block 0, so no D/M split boundary exists.
 
+**API migration (0.3.0):** `SeriesProfile` is now `SeriesProfile(name, aliases, devices)`; the old `d_ranges`, `d_split_boundary`, `m_ranges`, `m_split_boundary`, `x_max_octal`, `y_max_octal`, `guarded_d`, and `guarded_m` attributes are removed. Read limits via `profile.devices[Device.D].views[View.WORD].segments`.
+
 ### 2. Commercial Model Alias Mapping
 
 You can supply either a canonical profile name or any commercial model alias to `--series`, `deltactl config set-series`, or the Python client `series` parameter:
